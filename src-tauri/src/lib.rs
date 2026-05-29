@@ -1,0 +1,232 @@
+#[cfg(target_os = "macos")]
+mod accessibility;
+mod commands;
+mod db;
+mod storage;
+
+use std::sync::{Arc, Mutex};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Emitter, Manager, WebviewWindowBuilder,
+};
+
+use commands::*;
+use db::Db;
+use storage::StorageDir;
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let handle = app.handle().clone();
+
+            // ── Storage location (user-configurable) ────────────────────────
+            let storage_dir = storage::resolve(&handle);
+            let storage_state: StorageDir = Arc::new(Mutex::new(storage_dir.clone()));
+            app.manage(storage_state);
+
+            // ── Database (lives inside the storage folder) ──────────────────
+            let db: Db = match db::open(&storage_dir) {
+                Ok(conn) => Arc::new(Mutex::new(conn)),
+                Err(e) => {
+                    eprintln!("DB open failed: {e}");
+                    return Ok(());
+                }
+            };
+            // Top up the index from the folders (.md files are the source of
+            // truth) — picks up anything added/restored outside the app.
+            if let Ok(conn) = db.lock() {
+                commands::rebuild_index(&conn, &storage_dir);
+            }
+            app.manage(db.clone());
+
+            // ── Reminder notifier ───────────────────────────────────────────
+            // Poll every 30s for due reminders, fire a native notification, and
+            // clear them (one-shot). Local, no plugin needed.
+            {
+                let db_poll = db.clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(30));
+                    let now = chrono::Utc::now().to_rfc3339();
+                    let mut due: Vec<(String, String)> = Vec::new();
+                    if let Ok(conn) = db_poll.lock() {
+                        if let Ok(mut stmt) = conn.prepare(
+                            "SELECT id, COALESCE(NULLIF(title,''), NULLIF(text,''), 'Reminder')
+                             FROM items WHERE remind_at IS NOT NULL AND remind_at <= ?1",
+                        ) {
+                            if let Ok(rows) = stmt.query_map([&now], |r| {
+                                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                            }) {
+                                due = rows.filter_map(|x| x.ok()).collect();
+                            }
+                        }
+                    }
+                    for (id, body) in due {
+                        let safe: String =
+                            body.replace('"', "'").chars().take(120).collect();
+                        let _ = std::process::Command::new("osascript")
+                            .arg("-e")
+                            .arg(format!(
+                                "display notification \"{safe}\" with title \"Shiro\" sound name \"Glass\""
+                            ))
+                            .output();
+                        if let Ok(conn) = db_poll.lock() {
+                            let _ = conn
+                                .execute("UPDATE items SET remind_at = NULL WHERE id = ?1", [&id]);
+                        }
+                    }
+                });
+            }
+
+            // ── Main window: hide on close so the tray can re-open it ───────
+            if let Some(main_win) = app.get_webview_window("main") {
+                let hide_win = main_win.clone();
+                main_win.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = hide_win.hide();
+                    }
+                });
+            }
+
+            // ── Pre-create the capture popup (hidden, kept alive) ───────────
+            let popup_url = if cfg!(debug_assertions) {
+                "http://localhost:1420?window=popup"
+            } else {
+                "tauri://localhost?window=popup"
+            };
+            // The popup is converted into a non-activating NSPanel on first show
+            // (see commands::present_panel) so it can float over full-screen apps.
+            let popup = WebviewWindowBuilder::new(
+                app,
+                "popup",
+                tauri::WebviewUrl::External(popup_url.parse().unwrap()),
+            )
+            .title("Shiro")
+            .inner_size(440.0, 360.0)
+            .resizable(false)
+            .always_on_top(true)
+            .decorations(false)
+            .transparent(true)
+            .skip_taskbar(true)
+            .visible(false)
+            .build();
+
+            // Dismiss the popup when it loses focus — i.e. the user clicks
+            // outside it or switches Spaces. The recently-shown guard ignores the
+            // transient blur that fires while the panel is being presented.
+            if let Ok(popup) = popup {
+                let p = popup.clone();
+                popup.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Focused(false) = event {
+                        if commands::popup_recently_shown() {
+                            return;
+                        }
+                        // Let the frontend play its fade-out, then close without
+                        // restoring focus (the user clicked elsewhere / changed Space).
+                        let _ = p.emit("popup-dismiss", ());
+                    }
+                });
+            }
+
+            // ── Global hotkey (loaded from settings) ────────────────────────
+            let hotkey = {
+                let conn = db.lock().unwrap();
+                db::get_setting(&conn, "hotkey")
+                    .unwrap_or(None)
+                    .unwrap_or_else(|| DEFAULT_HOTKEY.to_string())
+            };
+            if let Err(e) = register_hotkey(app.handle(), &hotkey) {
+                eprintln!("Could not register hotkey '{hotkey}': {e}");
+            }
+
+            // ── System tray ─────────────────────────────────────────────────
+            if let (Ok(open_i), Ok(capture_i), Ok(quit_i)) = (
+                MenuItem::with_id(app, "open", "Open Shiro", true, None::<&str>),
+                MenuItem::with_id(app, "capture", "Quick Capture", true, None::<&str>),
+                MenuItem::with_id(app, "quit", "Quit", true, None::<&str>),
+            ) {
+                if let Ok(menu) = Menu::with_items(app, &[&open_i, &capture_i, &quit_i]) {
+                    if let Some(icon) = app.default_window_icon() {
+                        let _ = TrayIconBuilder::new()
+                            .icon(icon.clone())
+                            .menu(&menu)
+                            .show_menu_on_left_click(false)
+                            .on_tray_icon_event(|tray, event| {
+                                if let TrayIconEvent::Click {
+                                    button: MouseButton::Left,
+                                    button_state: MouseButtonState::Up,
+                                    ..
+                                } = event
+                                {
+                                    let app = tray.app_handle();
+                                    if let Some(win) = app.get_webview_window("main") {
+                                        let _ = win.show();
+                                        let _ = win.set_focus();
+                                    }
+                                }
+                            })
+                            .on_menu_event(|app, event| match event.id.as_ref() {
+                                "open" => {
+                                    if let Some(win) = app.get_webview_window("main") {
+                                        let _ = win.show();
+                                        let _ = win.set_focus();
+                                    }
+                                }
+                                "capture" => {
+                                    let app_h = app.clone();
+                                    std::thread::spawn(move || trigger_capture(&app_h));
+                                }
+                                "quit" => app.exit(0),
+                                _ => {}
+                            })
+                            .build(app);
+                    }
+                }
+            }
+
+            // ── macOS: menu-bar utility behaviour ────────────────────────────
+            // Accessory policy = no Dock icon, and focusing the popup no longer
+            // drags the main window forward.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            // ── Nudge the macOS Accessibility prompt on first run ────────────
+            std::thread::spawn(|| {
+                let _ = std::process::Command::new("osascript")
+                    .arg("-e")
+                    .arg(r#"tell application "System Events" to get processes whose frontmost is true"#)
+                    .output();
+            });
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            cmd_save_item,
+            cmd_save_files,
+            cmd_get_items,
+            cmd_get_item,
+            cmd_delete_item,
+            cmd_update_notes,
+            cmd_search,
+            cmd_show_popup,
+            cmd_close_popup,
+            cmd_get_hotkey,
+            cmd_set_hotkey,
+            cmd_get_storage_dir,
+            cmd_set_storage_dir,
+            cmd_open_path,
+            cmd_take_screenshot,
+            cmd_read_image,
+            cmd_accessibility_status,
+            cmd_request_accessibility,
+            cmd_open_accessibility_settings,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running shiro");
+}
