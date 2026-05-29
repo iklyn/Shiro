@@ -1,7 +1,19 @@
-# Tauri + React
+# Shiro
 
-This template should help get you started developing with Tauri and React in Vite.
+A save it all app.
 
-## Recommended IDE Setup
+Most bookmarking softwares online are one/more of these things:
+1. doesn't support all files
+2. confined to browser
+3. doesn't remind you.
+4. shit ui
+5. complex
+6. subscription
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+A bookmarking app has one job - Save everything, and give you when you want. Shiro does exactly that and more.
+
+This is a simple, practical, & beautiful bookmarking app that can save any file/text/image, anywhere. All files stored locally on your mac. 
+
+No login. No internet. No charge.
+
+And it's free forever.
