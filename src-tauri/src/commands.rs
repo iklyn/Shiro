@@ -41,6 +41,8 @@ pub struct PopupData {
     pub title: Option<String>,
     pub text: Option<String>,
     #[serde(default)]
+    pub html: Option<String>,
+    #[serde(default)]
     pub files: Vec<String>,
     /// Pre-attached screenshot: a `data:image/png;base64,…` preview plus the
     /// temp file path that gets moved into Images/ on save.
@@ -1119,12 +1121,21 @@ fn capture_context() -> Result<PopupData, String> {
         #[cfg(not(target_os = "macos"))]
         { None }
     };
-    let text = ax_text.or_else(capture_selected_text_via_clipboard);
+    let ax_text = ax_text.filter(|s| !s.is_empty());
+    let (text, clip_html) = if let Some(t) = ax_text {
+        (Some(t), None)
+    } else {
+        match capture_selected_text_via_clipboard() {
+            Some((t, h)) => (Some(t), h),
+            None => (None, None),
+        }
+    };
 
     Ok(PopupData {
         url: url.filter(|s| !s.is_empty()),
         title: title.filter(|s| !s.is_empty()),
         text: text.filter(|s| !s.is_empty()),
+        html: clip_html.filter(|s| !s.is_empty()),
         files: vec![],
         ..Default::default()
     })
@@ -1184,7 +1195,7 @@ fn browser_url_title(front: &str) -> (Option<String>, Option<String>) {
 /// apps; browsers/Electron usually don't expose it, so we fall back to the
 /// Cmd+C method. Both use the same Accessibility permission.
 
-fn capture_selected_text_via_clipboard() -> Option<String> {
+fn capture_selected_text_via_clipboard() -> Option<(String, Option<String>)> {
     // Two modes:
     //  • Accessibility granted → clear clipboard, send Cmd+C, poll for the new
     //    selection (accurate even if it matches what was already copied).
@@ -1229,5 +1240,17 @@ fn capture_selected_text_via_clipboard() -> Option<String> {
         end if
         return selText
     "#;
-    run_osascript(script).ok().map(|s| s.trim().to_string())
+    let text = run_osascript(script)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())?;
+
+    // After the text is captured the clipboard still holds the selection.
+    // Try to read the HTML type too — browsers always write both text and HTML.
+    let html = run_osascript("the clipboard as «class HTML»")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    Some((text, html))
 }

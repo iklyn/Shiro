@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence, LayoutGroup, useMotionValue, animate as fmAnimate } from "framer-motion";
 import shiroLogo from "./assets/shiro.png";
 import "./App.css";
 
@@ -25,7 +25,8 @@ const IconCamera = (p) => (<svg {...S(p)}><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 
 const IconAlarm = (p) => (<svg {...S(p)}><circle cx="12" cy="13" r="8" /><path d="M12 9v4l2 2" /><path d="M5 3 2 6" /><path d="m22 6-3-3" /><path d="M6.38 18.7 4 21" /><path d="M17.64 18.67 20 21" /></svg>);
 const IconNote = (p) => (<svg {...S(p)}><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z" /></svg>);
 const IconClose = (p) => (<svg {...S(p)}><path d="M18 6 6 18M6 6l12 12" /></svg>);
-const IconExpandUp = (p) => (<svg {...S(p)}><path d="m17 13-5-5-5 5"/><path d="m17 18-5-5-5 5"/></svg>);
+const IconChevRR  = (p) => (<svg {...S(p)}><path d="m6 17 5-5-5-5"/><path d="m13 17 5-5-5-5"/></svg>);
+const IconChevLL  = (p) => (<svg {...S(p)}><path d="m18 17-5-5 5-5"/><path d="m11 17-5-5 5-5"/></svg>);
 const IconBack = (p) => (<svg {...S(p)}><path d="m15 18-6-6 6-6" /></svg>);
 const IconExternal = (p) => (<svg {...S(p)}><path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></svg>);
 const IconTrash = (p) => (<svg {...S(p)}><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /></svg>);
@@ -182,11 +183,12 @@ function MainApp() {
             <p>{searching ? "Try a different search." : "Press your shortcut to capture text or a screenshot, or drop files anywhere."}</p>
           </div>
         ) : (
-          <div className="card-grid">
-            {visible.map((it, i) => (
+          <MasonryGrid
+            items={visible}
+            renderCard={(it, i) => (
               <Card key={it.id} item={it} index={i} onClick={() => setSelectedId(it.id)} />
-            ))}
-          </div>
+            )}
+          />
         )}
       </main>
 
@@ -215,6 +217,52 @@ function MainApp() {
   );
 }
 
+/* True masonry: responsive column count from the actual width, cards flow
+   left-to-right (newest first) so reading order is preserved, each column
+   stacks naturally so heights vary like a mood board. */
+const MASONRY_EASE = [0.16, 1, 0.3, 1];
+const MASONRY_DUR  = 0.42;
+
+function MasonryGrid({ items, renderCard }) {
+  const ref = useRef(null);
+  const [cols, setCols] = useState(4);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const GAP = 14, MIN_COL = 228;
+    let tid;
+    const recompute = () => {
+      clearTimeout(tid);
+      // 120 ms debounce — fires once the user stops dragging the resize handle
+      tid = setTimeout(() => {
+        const w = el.clientWidth;
+        setCols(Math.max(1, Math.min(6, Math.floor((w + GAP) / (MIN_COL + GAP)))));
+      }, 120);
+    };
+    recompute();
+    const ro = new ResizeObserver(recompute);
+    ro.observe(el);
+    return () => { ro.disconnect(); clearTimeout(tid); };
+  }, []);
+
+  const columns = Array.from({ length: cols }, () => []);
+  items.forEach((it, i) => columns[i % cols].push([it, i]));
+
+  return (
+    <LayoutGroup id="masonry">
+      <motion.div className="masonry" ref={ref} layout transition={{ duration: MASONRY_DUR, ease: MASONRY_EASE }}>
+        {columns.map((col, ci) => (
+          <motion.div className="masonry-col" key={ci} layout
+            transition={{ duration: MASONRY_DUR, ease: MASONRY_EASE }}>
+            {col.map(([it, i]) => renderCard(it, i))}
+          </motion.div>
+        ))}
+      </motion.div>
+    </LayoutGroup>
+  );
+}
+
 function Card({ item, index, onClick }) {
   const { label, Icon, cls } = kindOf(item);
   const [thumb, setThumb] = useState(null);
@@ -231,11 +279,15 @@ function Card({ item, index, onClick }) {
   const snippet = item.text || (item.type !== "file" ? item.url : null) || "";
   return (
     <motion.div
-      className="card"
+      className={`card${!thumb ? " card-text" : ""}`}
       onClick={onClick}
+      layout
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1], delay: Math.min((index || 0) * 0.025, 0.18) }}
+      transition={{
+        duration: 0.28, ease: [0.16, 1, 0.3, 1], delay: Math.min((index || 0) * 0.025, 0.18),
+        layout: { duration: MASONRY_DUR, ease: MASONRY_EASE },
+      }}
     >
       {thumb && <img className="card-thumb" src={thumb} alt="" />}
       {!thumb && (
@@ -252,124 +304,392 @@ function Card({ item, index, onClick }) {
   );
 }
 
-function DetailModal({ item, onClose, onDelete, onSaved }) {
-  const [notes, setNotes] = useState(item.notes ?? "");
-  const [img, setImg] = useState(null);
+/* ── Helpers for floating notes ────────────────────────────────────────────── */
+function parseNoteCards(raw) {
+  if (!raw) return [];
+  try {
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr)) return arr;
+  } catch {}
+  return raw.trim() ? [{ id: "legacy-0", text: raw }] : [];
+}
+function serializeNoteCards(cards) {
+  return cards.length ? JSON.stringify(cards.map(({ id, text }) => ({ id, text }))) : "";
+}
 
-  // Image-only items: pure screenshots or image files dragged in — show the clean viewer.
-  const isImageOnly = item.type === "image" || (item.type === "file" && isImagePath(item.file_path));
-  const imgPath = isImageOnly ? (item.file_path || item.image_path) : item.image_path;
+const STICKY_COLORS = ["#FEFCE8", "#FFF0F5", "#F0FDF4", "#EFF6FF"];
+
+// Fixed anchor list — all positions kept to the sides of the image,
+// within reasonable viewport bounds (no off-screen spawning).
+function getAnchor(index) {
+  const positions = [
+    { x: -430, y: -170, rot: -5 },
+    { x:  430, y: -160, rot:  4 },
+    { x: -430, y:  180, rot:  6 },
+    { x:  430, y:  170, rot: -3 },
+    { x: -430, y:    0, rot: -2 },
+    { x:  430, y:   10, rot:  3 },
+    { x: -530, y: -100, rot: -4 },
+    { x:  530, y:  -90, rot:  5 },
+    { x: -530, y:  110, rot:  5 },
+    { x:  530, y:  100, rot: -4 },
+    { x: -430, y: -280, rot: -3 },
+    { x:  430, y:  270, rot:  3 },
+  ];
+  const a   = positions[index % positions.length];
+  const lap = Math.floor(index / positions.length);
+  // Each full cycle just nudges y slightly so notes don't land exactly on top of each other.
+  return { x: a.x, y: a.y + lap * 44, rot: a.rot };
+}
+
+function StickyNote({ card, index, onTextChange, onDelete, peekMode }) {
+  const anchor  = getAnchor(index);
+  const color   = STICKY_COLORS[index % STICKY_COLORS.length];
+  const phase   = index * 1.05;
+  const peekDir = anchor.x < 0 ? -220 : 220;
+
+  const xMv   = useMotionValue(anchor.x);
+  const yMv   = useMotionValue(anchor.y);
+  const rotMv = useMotionValue(anchor.rot);
+
+  const [dragging, setDragging] = useState(false);
+  const baseX = useRef(anchor.x);
+  const baseY = useRef(anchor.y);
+
+  // Wave animation — pauses while dragging.
+  useEffect(() => {
+    if (dragging) return;
+    let raf;
+    const tick = () => {
+      const t = Date.now() / 1000;
+      yMv.set(baseY.current + Math.sin(t * 0.5  + phase) * 7);
+      rotMv.set(anchor.rot  + Math.sin(t * 0.35 + phase) * 1.4);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [dragging, phase, anchor.rot]);
+
+  // Peek: slide outward to reveal image, slide back on second double-click.
+  useEffect(() => {
+    fmAnimate(xMv, baseX.current + (peekMode ? peekDir : 0),
+      { type: "spring", stiffness: 180, damping: 22 });
+  }, [peekMode]);
+
+  return (
+    <motion.div
+      className="sticky-note"
+      style={{
+        position: "absolute", left: "50%", top: "50%",
+        marginLeft: -112, marginTop: -88,
+        x: xMv, y: yMv, rotate: rotMv,
+        background: color,
+        zIndex: dragging ? 200 : 30 + index,
+      }}
+      initial={{ scale: 0, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
+      exit={{ scale: 0, opacity: 0, transition: { duration: 0.18 } }}
+      transition={{ type: "spring", stiffness: 360, damping: 24, delay: index * 0.07 }}
+      drag
+      dragMomentum={false}
+      onDragStart={() => setDragging(true)}
+      onDragEnd={() => {
+        // Store drag position relative to the non-peeked baseline.
+        baseX.current = xMv.get() - (peekMode ? peekDir : 0);
+        baseY.current = yMv.get();
+        setDragging(false);
+      }}
+      whileDrag={{ scale: 1.06 }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="sn-header">
+        <span className="sn-grip" />
+        <button className="sn-del" onClick={(e) => { e.stopPropagation(); onDelete(card.id); }}>
+          <IconClose />
+        </button>
+      </div>
+      <textarea
+        className="sn-body"
+        value={card.text}
+        onChange={(e) => onTextChange(card.id, e.target.value)}
+        placeholder="Note…"
+        onPointerDown={(e) => e.stopPropagation()}
+        autoFocus={!card.text}
+      />
+    </motion.div>
+  );
+}
+
+function NoteStack({ cards, onPop }) {
+  const preview = cards.slice(0, 3);
+  return (
+    <motion.div
+      className="note-stack"
+      // Use margin for offset so Framer Motion's transform doesn't conflict with CSS transform
+      style={{ position: "absolute", left: "50%", top: "50%", marginLeft: -40, marginTop: 230 }}
+      initial={{ opacity: 0, scale: 0.85 }} animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.85 }}
+      transition={{ type: "spring", stiffness: 320, damping: 28 }}
+      onClick={(e) => { e.stopPropagation(); onPop(); }}
+      title={`${cards.length} more note${cards.length > 1 ? "s" : ""} — click to bring forward`}
+    >
+      {preview.map((_, i) => (
+        <div key={i} className="note-stack-card"
+          style={{ transform: `rotate(${(i - 1) * 7}deg) translateY(${(2 - i) * 3}px)`, zIndex: 3 - i }} />
+      ))}
+      <span className="note-stack-count">+{cards.length}</span>
+    </motion.div>
+  );
+}
+
+function sanitizeHtml(html) {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  doc.querySelectorAll("script, style, link, meta, head, iframe, object, embed, form, input, button").forEach(el => el.remove());
+  doc.querySelectorAll("*").forEach(el => {
+    Array.from(el.attributes).forEach(attr => {
+      if (attr.name.startsWith("on") || attr.name === "style" || attr.name === "class" || attr.name === "id") {
+        el.removeAttribute(attr.name);
+      }
+    });
+    if (el.tagName === "A") { el.removeAttribute("href"); el.removeAttribute("target"); }
+  });
+  return doc.body.innerHTML;
+}
+
+function parseInline(text) {
+  const parts = [];
+  const re = /(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`)/g;
+  let last = 0, m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    if (m[2] !== undefined) parts.push(<strong key={m.index}>{m[2]}</strong>);
+    else if (m[3] !== undefined) parts.push(<em key={m.index}>{m[3]}</em>);
+    else if (m[4] !== undefined) parts.push(<code key={m.index}>{m[4]}</code>);
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts.length === 1 && typeof parts[0] === "string" ? parts[0] : parts;
+}
+
+function renderMarkdown(text) {
+  if (!text) return null;
+  return text.trim().split(/\n{2,}/).map((block, i) => {
+    const lines = block.split("\n");
+    // Heading (single line)
+    if (lines.length === 1) {
+      const m = lines[0].match(/^(#{1,3})\s+(.+)/);
+      if (m) {
+        const level = m[1].length;
+        const Tag = `h${level}`;
+        return <Tag key={i} className={`md-h${level}`}>{m[2]}</Tag>;
+      }
+    }
+    // Bullet list
+    if (lines.length > 0 && lines.every(l => /^[-*]\s/.test(l))) {
+      return (
+        <ul key={i} className="md-ul">
+          {lines.map((l, j) => <li key={j}>{parseInline(l.replace(/^[-*]\s+/, ""))}</li>)}
+        </ul>
+      );
+    }
+    // Blockquote
+    if (lines.every(l => /^>\s?/.test(l))) {
+      return (
+        <blockquote key={i} className="md-blockquote">
+          {parseInline(lines.map(l => l.replace(/^>\s?/, "")).join(" "))}
+        </blockquote>
+      );
+    }
+    // Paragraph — join wrapped lines with a space
+    return <p key={i} className="md-p">{parseInline(lines.join(" "))}</p>;
+  });
+}
+
+function DetailModal({ item, onClose, onDelete, onSaved }) {
+  // Any item with an image path goes through the image viewer — text/title become sticky notes.
+  const isImageOnly = item.type === "image"
+    || (item.type === "file" && isImagePath(item.file_path))
+    || !!item.image_path;
+  const imgPath = isImageOnly ? (item.image_path || item.file_path) : null;
+
+  const [noteCards, setNoteCards] = useState(() => parseNoteCards(item.notes));
+  const [img, setImg]             = useState(null);
+  const [footerBg, setFooterBg]   = useState(null);       // cropped bottom strip data-url
+  const [footerTheme, setFooterTheme] = useState("dark"); // "dark"=white icons, "light"=dark
+
+  // Strip empty cards before serialising — they disappear on next open.
+  const toSave = (cards) => serializeNoteCards(cards.filter((c) => c.text.trim()));
+
+  const unmountRef = useRef(null);
+  unmountRef.current = { id: item.id, notes: toSave(noteCards) };
 
   useEffect(() => {
-    setNotes(item.notes ?? "");
+    setNoteCards(parseNoteCards(item.notes));
     setImg(null);
+    setFooterBg(null);
+    setFooterTheme("dark");
     if (imgPath) invoke("cmd_read_image", { path: imgPath }).then(setImg).catch(console.error);
-    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        const { id, notes: n } = unmountRef.current;
+        invoke("cmd_update_notes", { id, notes: n }).catch(console.error);
+        onClose();
+      }
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [item.id]);
 
-  const saveNotes = () => invoke("cmd_update_notes", { id: item.id, notes }).then(onSaved).catch(console.error);
+  useEffect(() => {
+    return () => {
+      const { id, notes: n } = unmountRef.current;
+      invoke("cmd_update_notes", { id, notes: n }).catch(console.error);
+    };
+  }, []);
+
+  // Analyse the bottom strip of the loaded image to pick white vs dark footer text.
+  useEffect(() => {
+    if (!img) return;
+    try {
+      const image = new Image();
+      image.onload = () => {
+        try {
+          const sampleH = Math.min(80, image.height);
+          const canvas = document.createElement("canvas");
+          canvas.width = image.width; canvas.height = sampleH;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(image, 0, image.height - sampleH, image.width, sampleH, 0, 0, image.width, sampleH);
+          const data = ctx.getImageData(0, 0, image.width, sampleH).data;
+          let sum = 0;
+          for (let i = 0; i < data.length; i += 4)
+            sum += data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+          setFooterTheme(sum / (data.length / 4) > 130 ? "light" : "dark");
+          if (isImageOnly) setFooterBg(canvas.toDataURL("image/jpeg", 0.9));
+        } catch (_) {}
+      };
+      image.src = img;
+    } catch (_) {}
+  }, [img]);
+
+  const saveTimer = useRef(null);
+  useEffect(() => {
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      invoke("cmd_update_notes", { id: item.id, notes: toSave(noteCards) }).catch(console.error);
+    }, 1200);
+    return () => clearTimeout(saveTimer.current);
+  }, [noteCards]);
+
+  const addNoteCard = () => {
+    if (noteCards.some((c) => !c.text.trim())) return;
+    setNoteCards((p) => [...p, { id: crypto.randomUUID(), text: "" }]);
+  };
+  const updateNoteCard = (id, text) => setNoteCards((p) => p.map((c) => c.id === id ? { ...c, text } : c));
+  const deleteNoteCard = (id)       => setNoteCards((p) => p.filter((c) => c.id !== id));
+
+  const flushSave = () => {
+    const { id, notes: n } = unmountRef.current;
+    invoke("cmd_update_notes", { id, notes: n }).then(onSaved).catch(console.error);
+  };
+  const closeAndSave = () => { flushSave(); onClose(); };
 
   const spring = { type: "spring", stiffness: 320, damping: 30 };
-
-  // ── Clean image viewer ──────────────────────────────────────────────────────
-  const [noteOpen, setNoteOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const noteRef = useRef(null);
+  const [peekMode, setPeekMode]       = useState(false);
+
+  // Shared footer — textColor and footerClass adapt per context.
+  const detailsStrip = (extraDetails, textColor = "var(--text3)", footerClass = "") => (
+    <div className={`imgview-foot${footerClass ? " " + footerClass : ""}`}>
+      {footerBg && <div className="imgview-foot-bg" style={{ backgroundImage: `url(${footerBg})` }} />}
+      <div style={{ flex: 1, position: "relative", height: 36, overflow: "hidden" }}>
+        <motion.button className="icon-btn" title="Show details"
+          style={{ position: "absolute", left: 0, top: 0, bottom: 0 }}
+          animate={{ opacity: detailsOpen ? 0 : 1, x: detailsOpen ? 30 : 0, pointerEvents: detailsOpen ? "none" : "auto" }}
+          initial={false}
+          transition={{ duration: 0.26, ease: [0.16, 1, 0.3, 1], delay: detailsOpen ? 0 : 0.202 }}
+          onClick={() => setDetailsOpen(true)}>
+          <IconChevRR />
+        </motion.button>
+        <motion.div
+          style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", gap: 10, paddingLeft: 4, overflow: "hidden", whiteSpace: "nowrap", fontSize: 12, color: textColor }}
+          animate={{ clipPath: detailsOpen ? "inset(0 0% 0 0)" : "inset(0 100% 0 0)" }}
+          initial={false}
+          transition={{ duration: 0.46, ease: [0.16, 1, 0.3, 1], delay: detailsOpen ? 0.1 : 0 }}>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", flex: 1 }}>Saved {new Date(item.created_at).toLocaleString()}</span>
+          {extraDetails}
+          <button className="icon-btn" style={{ flexShrink: 0 }} onClick={() => setDetailsOpen(false)}><IconChevLL /></button>
+        </motion.div>
+      </div>
+      <button className={`sn-add-note-btn${noteCards.length > 0 ? " has-notes" : ""}`}
+        onClick={addNoteCard}>
+        <IconNote />
+        <span>Add note</span>
+      </button>
+      <button className="icon-btn imgview-del" onClick={() => onDelete(item.id)} aria-label="Delete"><IconTrash /></button>
+    </div>
+  );
+
+  // ── Shared scrim wrapper with floating sticky notes ────────────────────────
+  const stickyLayer = (
+    <AnimatePresence>
+      {noteCards.map((card, i) => (
+        <StickyNote key={card.id} card={card} index={i}
+          onTextChange={updateNoteCard} onDelete={deleteNoteCard}
+          peekMode={peekMode} />
+      ))}
+    </AnimatePresence>
+  );
 
   if (isImageOnly) {
-    const showNoteArea = !!notes || noteOpen;
     return (
-      <motion.div className="scrim" onClick={onClose}
+      <motion.div className="scrim" onClick={closeAndSave}
         initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.16 }}>
-        <motion.div className="modal modal-imgview" onClick={(e) => e.stopPropagation()}
+        {stickyLayer}
+        <motion.div className="modal modal-imgview"
+          onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => { e.stopPropagation(); setPeekMode((v) => !v); }}
           initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
           exit={{ opacity: 0, scale: 0.96 }} transition={spring}>
           <div className="imgview-wrap">
             {img ? <img src={img} alt="" /> : <div className="imgview-placeholder" />}
           </div>
-          {showNoteArea && (
-            <textarea ref={noteRef} className="imgview-note" value={notes}
-              onChange={(e) => setNotes(e.target.value)} onBlur={saveNotes}
-              placeholder="Add a note…" rows={2} />
+          {detailsStrip(
+            <span className="imgview-finder" style={{ flexShrink: 0 }} onClick={() => invoke("cmd_reveal_in_finder", { path: imgPath })}>Show in Finder</span>,
+            footerTheme === "dark" ? "rgba(255,255,255,0.72)" : "rgba(0,0,0,0.6)",
+            footerTheme === "light" ? "footer-light" : ""
           )}
-          {detailsOpen && (
-            <div className="imgview-details">
-              <span>Saved {new Date(item.created_at).toLocaleString()}</span>
-              <span className="imgview-finder" onClick={() => invoke("cmd_reveal_in_finder", { path: imgPath })}>
-                Show in Finder
-              </span>
-            </div>
-          )}
-          <div className="imgview-foot">
-            <div style={{ flex: 1 }} />
-            <button className={`icon-btn ${detailsOpen ? "active" : ""}`} title="Details" onClick={() => setDetailsOpen(v => !v)}>
-              <IconExpandUp />
-            </button>
-            {!notes && (
-              <button className={`icon-btn ${noteOpen ? "active" : ""}`} title="Add note"
-                onClick={() => { setNoteOpen(true); setTimeout(() => noteRef.current?.focus(), 0); }}>
-                <IconNote />
-              </button>
-            )}
-            <button className="icon-btn imgview-del" onClick={() => onDelete(item.id)} aria-label="Delete"><IconTrash /></button>
-          </div>
         </motion.div>
       </motion.div>
     );
   }
 
-  // ── Full content modal — same minimal footer pattern as image viewer ─────────
-  const showNoteArea = !!notes || noteOpen;
+  // ── Content modal (highlight / link / text) ────────────────────────────────
   return (
-    <motion.div className="scrim" onClick={onClose}
+    <motion.div className="scrim" onClick={closeAndSave}
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.16 }}>
+      {stickyLayer}
       <motion.div className="modal modal-content" onClick={(e) => e.stopPropagation()}
+        onDoubleClick={(e) => { e.stopPropagation(); setPeekMode((v) => !v); }}
         initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.96 }} transition={spring}>
-
         <div className="content-main">
           {img && <img className="content-img" src={img} alt="" />}
-          {(item.title || item.text) && (
-            <div className="content-title">{item.title || item.text?.slice(0, 80) || "Untitled"}</div>
-          )}
-          {item.url && item.type !== "file" && (
-            <div className="content-url" onClick={() => openUrl(item.url)}>{item.url}</div>
-          )}
-          {item.text && item.title && <div className="content-text">{item.text}</div>}
+          {item.title && <div className="content-title">{item.title}</div>}
+          {item.html
+            ? <div className="content-body" dangerouslySetInnerHTML={{ __html: sanitizeHtml(item.html) }} />
+            : item.text && <div className="content-body">{renderMarkdown(item.text)}</div>
+          }
         </div>
-
-        {showNoteArea && (
-          <textarea ref={noteRef} className="imgview-note" value={notes}
-            onChange={(e) => setNotes(e.target.value)} onBlur={saveNotes}
-            placeholder="Add a note…" rows={3} />
-        )}
-        {detailsOpen && (
-          <div className="imgview-details">
-            <span>Saved {new Date(item.created_at).toLocaleString()}</span>
-            {item.remind_at && <span>· Reminder {new Date(item.remind_at).toLocaleString()}</span>}
-            {item.file_path && (
-              <span className="imgview-finder" onClick={() => invoke("cmd_reveal_in_finder", { path: item.file_path })}>Show in Finder</span>
-            )}
-            {item.url && item.type !== "file" && (
-              <span className="imgview-finder" onClick={() => openUrl(item.url)}>Open link</span>
-            )}
-          </div>
-        )}
-        <div className="imgview-foot">
-          <div style={{ flex: 1 }} />
-          <button className={`icon-btn ${detailsOpen ? "active" : ""}`} title="Details" onClick={() => setDetailsOpen(v => !v)}>
-            <IconExpandUp />
-          </button>
-          {!notes && (
-            <button className={`icon-btn ${noteOpen ? "active" : ""}`} title="Add note"
-              onClick={() => { setNoteOpen(true); setTimeout(() => noteRef.current?.focus(), 0); }}>
-              <IconNote />
-            </button>
-          )}
-          <button className="icon-btn imgview-del" onClick={() => onDelete(item.id)} aria-label="Delete"><IconTrash /></button>
-        </div>
+        {detailsStrip(<>
+          {item.remind_at && <span style={{ flexShrink: 0 }}>· Reminder {new Date(item.remind_at).toLocaleString()}</span>}
+          {item.url && item.type !== "file" && (() => {
+            let domain = item.url;
+            try { domain = new URL(item.url).hostname.replace(/^www\./, ""); } catch {}
+            return <span style={{ overflow: "hidden", textOverflow: "ellipsis", flexShrink: 1, minWidth: 0 }}>{domain}</span>;
+          })()}
+          {item.file_path && <span className="imgview-finder" style={{ flexShrink: 0 }} onClick={() => invoke("cmd_reveal_in_finder", { path: item.file_path })}>Show in Finder</span>}
+          {item.url && item.type !== "file" && <span className="imgview-finder" style={{ flexShrink: 0 }} onClick={() => openUrl(item.url)}>Open link</span>}
+        </>)}
       </motion.div>
     </motion.div>
   );
@@ -589,7 +909,7 @@ function CapturePill() {
       } else {
         const type = data.text?.trim() ? "highlight" : data.url ? "link" : "highlight";
         await invoke("cmd_save_item", {
-          req: { type, url: data.url ?? null, title: data.title ?? null, text: data.text ?? null, file_path: null, notes: note || null, remind_at: remind },
+          req: { type, url: data.url ?? null, title: data.title ?? null, text: data.text ?? null, html: data.html ?? null, file_path: null, notes: note || null, remind_at: remind },
           screenshotPath: shot?.path ?? null,
         });
       }
