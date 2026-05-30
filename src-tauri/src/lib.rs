@@ -92,6 +92,22 @@ pub fn run() {
                         let _ = hide_win.hide();
                     }
                 });
+
+                // Let the green button enter real macOS full-screen, not just
+                // zoom. titleBarStyle:Overlay drops FullScreenPrimary from the
+                // window's collection behaviour, so re-add it (main thread = ok).
+                #[cfg(target_os = "macos")]
+                {
+                    use objc::{msg_send, sel, sel_impl};
+                    if let Ok(ns) = main_win.ns_window() {
+                        let ns = ns as *mut objc::runtime::Object;
+                        unsafe {
+                            let cur: usize = msg_send![ns, collectionBehavior];
+                            // NSWindowCollectionBehaviorFullScreenPrimary = 1 << 7
+                            let _: () = msg_send![ns, setCollectionBehavior: cur | (1usize << 7)];
+                        }
+                    }
+                }
             }
 
             // ── Pre-create the capture popup (hidden, kept alive) ───────────

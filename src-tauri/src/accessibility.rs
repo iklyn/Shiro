@@ -29,6 +29,39 @@ pub fn is_trusted() -> bool {
     unsafe { AXIsProcessTrusted() }
 }
 
+/// The frontmost app's (localizedName, pid) via NSWorkspace — in-process and
+/// instant, replacing an osascript spawn on the capture hot path.
+pub fn frontmost_app() -> Option<(String, i32)> {
+    use objc::runtime::{Class, Object};
+    use objc::{msg_send, sel, sel_impl};
+    use std::ffi::CStr;
+    use std::os::raw::c_char;
+    unsafe {
+        let cls = Class::get("NSWorkspace")?;
+        let ws: *mut Object = msg_send![cls, sharedWorkspace];
+        if ws.is_null() {
+            return None;
+        }
+        let app: *mut Object = msg_send![ws, frontmostApplication];
+        if app.is_null() {
+            return None;
+        }
+        let pid: i32 = msg_send![app, processIdentifier];
+        let name_ns: *mut Object = msg_send![app, localizedName];
+        let name = if name_ns.is_null() {
+            String::new()
+        } else {
+            let c: *const c_char = msg_send![name_ns, UTF8String];
+            if c.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr(c).to_string_lossy().into_owned()
+            }
+        };
+        Some((name, pid))
+    }
+}
+
 /// Add Shiro to the Accessibility list and show the system permission dialog
 /// (with an "Open System Settings" button). Returns the current trust state.
 pub fn prompt_trust() -> bool {

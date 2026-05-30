@@ -20,7 +20,9 @@
         "minWidth": 800,
         "minHeight": 500,
         "resizable": true,
-        "decorations": true
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "backgroundColor": "#FBFBFC"
       }
     ],
     "security": {

@@ -1,5 +1,10 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+@font-face { font-family: 'OnePlus Sans'; src: url('./assets/fonts/OnePlusSans-Light.ttf') format('truetype'); font-weight: 300; font-style: normal; font-display: swap; }
+@font-face { font-family: 'OnePlus Sans'; src: url('./assets/fonts/OnePlusSans-Regular.ttf') format('truetype'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'OnePlus Sans'; src: url('./assets/fonts/OnePlusSans-Medium.ttf') format('truetype'); font-weight: 500; font-style: normal; font-display: swap; }
+@font-face { font-family: 'OnePlus Sans'; src: url('./assets/fonts/OnePlusSans-Bold.ttf') format('truetype'); font-weight: 700; font-style: normal; font-display: swap; }
+
 :root {
   /* surfaces */
   --bg:        #fbfbfc;
@@ -13,9 +18,9 @@
   --text2:     #6a6a76;
   --text3:     #9b9ba6;
   /* brand */
-  --accent:    #5b5bd6;
-  --accent-h:  #4a4ac4;
-  --accent-soft:#eeeefb;
+  --accent:    #FF7518;
+  --accent-h:  #E8630C;
+  --accent-soft:#ffe8d6;
   --danger:    #e5484d;
   --danger-soft:#fdecec;
   --ok:        #16a34a;
@@ -33,10 +38,11 @@
   --shadow-2:  0 4px 14px rgba(20,20,30,.08), 0 10px 32px rgba(20,20,30,.10);
   --shadow-pop:0 10px 50px rgba(20,20,30,.22), 0 2px 10px rgba(20,20,30,.12);
   --ease:      cubic-bezier(.16,1,.3,1);
-  --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui, sans-serif;
+  --font: 'OnePlus Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
 }
 
-html, body { background: transparent; }
+html, body { background: var(--bg); }
+html.popup, html.popup body { background: transparent; }
 body {
   color: var(--text); font-family: var(--font); font-size: 14px;
   -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
@@ -52,10 +58,17 @@ button { font-family: inherit; cursor: default; }
 .app { display: flex; flex-direction: column; height: 100vh; background: var(--bg); overflow: hidden; }
 
 .topbar {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 20px; gap: 12px;
+  display: flex; align-items: center; justify-content: flex-end;
+  padding: 6px 14px; gap: 12px;
   background: rgba(251,251,252,.72); backdrop-filter: saturate(180%) blur(12px);
   position: sticky; top: 0; z-index: 10;
+}
+
+/* mascot, parked bottom-right */
+.brand-float {
+  position: fixed; right: 22px; bottom: 18px; z-index: 5;
+  width: 68px; height: 68px; object-fit: contain;
+  pointer-events: none; user-select: none;
 }
 .brand {
   display: flex; align-items: center; gap: 9px;
@@ -63,10 +76,22 @@ button { font-family: inherit; cursor: default; }
   border: 1.5px dashed transparent; transition: background .18s var(--ease), border-color .18s var(--ease);
   user-select: none;
 }
-.brand img { width: 46px; height: 46px; border-radius: 11px; transition: transform .18s var(--ease); }
+.brand img { width: 34px; height: 34px; border-radius: 9px; transition: transform .18s var(--ease); }
 .brand.drop { background: var(--accent-soft); border-color: var(--accent); }
 .brand.drop img { transform: scale(1.08); }
 .brand .brand-hint { font-size: 12px; color: var(--accent); font-weight: 600; padding-right: 8px; }
+
+/* whole-window drag & drop overlay */
+.drop-overlay {
+  position: fixed; inset: 0; z-index: 200; pointer-events: none;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255, 117, 24, 0.10); backdrop-filter: blur(2px);
+}
+.drop-card {
+  padding: 14px 24px; border-radius: var(--r-pill);
+  background: var(--accent); color: #fff; font-weight: 650; font-size: 15px;
+  box-shadow: 0 10px 34px rgba(255, 117, 24, 0.40);
+}
 
 .topbar-actions { display: flex; align-items: center; gap: 6px; }
 
@@ -231,50 +256,46 @@ button { font-family: inherit; cursor: default; }
 .linklike:hover { text-decoration: underline; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; background: var(--bg3); padding: 1px 5px; border-radius: 5px; }
 
-/* ── Capture pill (popup window) ───────────────────── */
-.pill {
-  margin: 10px; height: calc(100vh - 20px);
-  background: var(--card); border: 1px solid var(--border2); border-radius: 20px;
-  box-shadow: var(--shadow-pop);
-  display: flex; flex-direction: column; padding: 14px 16px; gap: 11px; overflow: hidden;
+/* ── Capture pill: small action bar at bottom, content stacked above ── */
+.pill-wrap {
+  height: 100vh; width: 100%;
+  display: flex; flex-direction: column; justify-content: flex-end; align-items: center;
+  gap: 8px; padding: 14px;
+}
+.stack { display: flex; flex-direction: column; gap: 8px; width: 100%; align-items: stretch; }
+.chip-card {
+  background: var(--card); border: 1px solid var(--border2); border-radius: var(--r-md);
+  box-shadow: var(--shadow-1); padding: 12px 14px; font-size: 14px; color: var(--text);
+  max-height: 200px; overflow: auto;
+}
+.chip-card .ct-title { font-weight: 600; line-height: 1.3; }
+.chip-card .ct-text { line-height: 1.55; white-space: pre-wrap; margin-top: 2px; }
+.chip-card .ct-url { font-size: 12.5px; color: var(--accent); margin-top: 4px; word-break: break-all; }
+.chip-card.shot { padding: 0; position: relative; overflow: hidden; }
+.chip-card.shot img { display: block; width: 100%; max-height: 200px; object-fit: contain; background: var(--bg2); }
+.shot-x {
+  position: absolute; top: 8px; right: 8px; width: 24px; height: 24px; border: none; cursor: default;
+  border-radius: var(--r-pill); background: rgba(0,0,0,.55); color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.shot-x svg { width: 13px; height: 13px; }
+.chip-input {
+  width: 100%; background: var(--card); border: 1px solid var(--border2); border-radius: var(--r-md);
+  box-shadow: var(--shadow-1); padding: 11px 14px; font-size: 14px; color: var(--text);
+  outline: none; font-family: var(--font);
+}
+.chip-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+.bar {
+  display: flex; align-items: center; gap: 3px;
+  background: var(--card); border: 1px solid var(--border2);
+  border-radius: var(--r-pill); padding: 6px 8px; box-shadow: var(--shadow-1);
   -webkit-app-region: drag;
 }
-.pill * { -webkit-app-region: no-drag; }
-.pill-head { display: flex; align-items: center; gap: 8px; cursor: grab; }
-.pill-head img { width: 34px; height: 34px; border-radius: 9px; }
-.pill-head .spacer { flex: 1; }
-
-.pill-content { display: flex; flex-direction: column; gap: 9px; overflow-y: auto; flex: 1; }
-.pill-quote { font-size: 13.5px; line-height: 1.5; color: var(--text); background: var(--bg2); border-left: 2px solid var(--accent); border-radius: var(--r-sm); padding: 10px 12px; max-height: 120px; overflow-y: auto; }
-.pill-title { font-size: 14px; font-weight: 600; line-height: 1.3; }
-.pill-url { font-size: 12px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pill-files { font-size: 13px; color: var(--text2); }
-.pill-shot { position: relative; }
-.pill-shot img { width: 100%; max-height: 150px; object-fit: contain; border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--bg2); display: block; }
-.shot-x { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: var(--r-pill); border: none; background: rgba(0,0,0,.6); color: #fff; display: inline-flex; align-items: center; justify-content: center; }
-.shot-x svg { width: 13px; height: 13px; }
-
-/* Seamless inputs — no boxes; they read as part of the card surface. */
-.pinput {
-  width: 100%; background: transparent; border: none; outline: none;
-  padding: 2px 2px; color: var(--text); font-size: 15px; line-height: 1.5; font-family: var(--font);
-}
-.pinput::placeholder { color: var(--text3); }
-textarea.pinput { resize: none; }
-.pill-capture { font-size: 16px; }
-.pill-note {
-  border-top: 1px solid var(--border); padding-top: 9px; font-size: 14px;
-}
-.dt-input {
-  width: 100%; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--r-sm);
-  padding: 7px 11px; color: var(--text); font-size: 13px; outline: none; font-family: var(--font);
-  border-top: none; /* keep alarm row distinct */
-}
-
-.pill-foot { display: flex; align-items: center; gap: 4px; padding-top: 2px; }
-.pill-foot .spacer { flex: 1; }
-.remind-row { display: flex; align-items: center; gap: 8px; }
-.remind-row input[type="datetime-local"] { flex: 1; }
+.bar button, .bar input { -webkit-app-region: no-drag; }
+.bar-logo { width: 26px; height: 26px; object-fit: contain; margin: 0 4px 0 2px; }
+.bar .spacer { flex: 1; min-width: 6px; }
+.bar .save-btn { padding: 7px 14px; margin-left: 2px; }
 
 /* scrollbar */
 ::-webkit-scrollbar { width: 9px; height: 9px; }

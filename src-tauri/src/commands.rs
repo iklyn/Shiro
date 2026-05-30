@@ -442,10 +442,34 @@ pub fn cmd_get_item(db: tauri::State<Db>, id: String) -> Result<Item, String> {
 }
 
 #[tauri::command]
-pub fn cmd_delete_item(db: tauri::State<Db>, id: String) -> Result<(), String> {
+pub fn cmd_delete_item(
+    db: tauri::State<Db>,
+    storage: tauri::State<StorageDir>,
+    id: String,
+) -> Result<(), String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
+    // Find the on-disk artifacts (the .md / file / screenshot) before removing
+    // the row, so we can delete them from the storage folder too.
+    let (file_path, image_path): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT file_path, image_path FROM items WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap_or((None, None));
     conn.execute("DELETE FROM items WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
+    drop(conn);
+
+    let dir = storage.lock().map_err(|e| e.to_string())?.clone();
+    for rel in [file_path, image_path].into_iter().flatten() {
+        if rel.trim().is_empty() {
+            continue;
+        }
+        let p = std::path::Path::new(&rel);
+        let full = if p.is_absolute() { p.to_path_buf() } else { dir.join(p) };
+        let _ = std::fs::remove_file(full);
+    }
     Ok(())
 }
 
@@ -554,14 +578,18 @@ pub fn cmd_show_popup(app: AppHandle, data: PopupData) -> Result<(), String> {
     // React's listen() handler is already registered (window is pre-loaded) — no race.
     let _ = win.emit("popup-data", &data);
 
-    // Position near the cursor. Do NOT clamp to >= 0 — cursor coordinates are
-    // global physical pixels and are negative on displays left of / above the
-    // primary monitor. Clamping there is what forced the popup onto the wrong
-    // screen. Offsetting slightly below-right keeps it from covering the cursor.
+    // The action bar sits at the BOTTOM of the window (content stacks above it),
+    // so anchor the window's bottom — not its top — near the cursor. Offsets are
+    // physical (cursor_position is physical); scale converts the logical 440x360
+    // window. Don't clamp: cursor coords go negative on displays left of/above
+    // the primary monitor.
     if let Ok(pos) = win.cursor_position() {
+        let scale = win.scale_factor().unwrap_or(1.0);
+        let off_x = (220.0 * scale) as i32; // half of 440 → centered on cursor
+        let off_y = (300.0 * scale) as i32; // bar ≈ 60px below the cursor
         let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-            x: pos.x as i32 - 200,
-            y: pos.y as i32 + 18,
+            x: pos.x as i32 - off_x,
+            y: pos.y as i32 - off_y,
         }));
     }
 
@@ -877,20 +905,36 @@ pub fn cmd_set_hotkey(app: AppHandle, db: tauri::State<Db>, hotkey: String) -> R
 }
 
 pub fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<(), String> {
-    let shortcut = parse_shortcut(hotkey)?;
-    let app_handle = app.clone();
+    let (mods, code) = parse_shortcut_parts(hotkey)?;
 
+    // Main hotkey → always open the capture pill.
+    let main = Shortcut::new(if mods.is_empty() { None } else { Some(mods) }, code);
+    let h1 = app.clone();
     app.global_shortcut()
-        .on_shortcut(shortcut, move |_app, _sc, event| {
+        .on_shortcut(main, move |_app, _sc, event| {
             if event.state() == ShortcutState::Pressed {
-                let h = app_handle.clone();
+                let h = h1.clone();
                 std::thread::spawn(move || trigger_capture(&h));
             }
         })
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Hotkey + Shift → fire the screenshot selector immediately (skip if the
+    // user's hotkey already includes Shift, to avoid registering it twice).
+    if !mods.contains(Modifiers::SHIFT) {
+        let shot = Shortcut::new(Some(mods | Modifiers::SHIFT), code);
+        let h2 = app.clone();
+        let _ = app.global_shortcut().on_shortcut(shot, move |_app, _sc, event| {
+            if event.state() == ShortcutState::Pressed {
+                let h = h2.clone();
+                std::thread::spawn(move || trigger_screenshot(&h));
+            }
+        });
+    }
+    Ok(())
 }
 
-fn parse_shortcut(s: &str) -> Result<Shortcut, String> {
+fn parse_shortcut_parts(s: &str) -> Result<(Modifiers, Code), String> {
     let parts: Vec<&str> = s.split('+').collect();
     let key_str = parts.last().ok_or("empty shortcut string")?;
 
@@ -907,7 +951,7 @@ fn parse_shortcut(s: &str) -> Result<Shortcut, String> {
         }
     }
 
-    Ok(Shortcut::new(if mods.is_empty() { None } else { Some(mods) }, code))
+    Ok((mods, code))
 }
 
 fn str_to_code(s: &str) -> Option<Code> {
@@ -951,26 +995,24 @@ fn str_to_code(s: &str) -> Option<Code> {
 // ─── capture trigger (shared with lib.rs) ────────────────────────────────────
 
 pub fn trigger_capture(app: &AppHandle) {
-    // One AppleScript run, BEFORE the popup steals focus, figures out the
-    // context: Finder file selection, browser URL/title, or selected text.
-    let mut data = capture_context().unwrap_or_default();
-
-    let has_content =
-        data.text.is_some() || data.url.is_some() || !data.files.is_empty();
-
-    // Nothing selected → go straight to the screenshot selector. If the user
-    // cancels it (Escape), don't open the popup at all.
-    if !has_content {
-        match take_screenshot_to_temp() {
-            Some(shot) => {
-                data.screenshot = Some(shot.data_url);
-                data.screenshot_path = Some(shot.path);
-            }
-            None => return,
-        }
-    }
-
+    // ALWAYS open the pill, pre-filled with any detected selection/context.
+    // A screenshot is never auto-fired — it's a deliberate action (the camera
+    // button in the pill, or the hotkey+Shift variant → trigger_screenshot).
+    let data = capture_context().unwrap_or_default();
     let _ = cmd_show_popup(app.clone(), data);
+}
+
+/// hotkey+Shift: fire the region selector immediately, then open the pill with
+/// the screenshot attached. Cancelling the selector (Escape) opens nothing.
+pub fn trigger_screenshot(app: &AppHandle) {
+    if let Some(shot) = take_screenshot_to_temp() {
+        let data = PopupData {
+            screenshot: Some(shot.data_url),
+            screenshot_path: Some(shot.path),
+            ..Default::default()
+        };
+        let _ = cmd_show_popup(app.clone(), data);
+    }
 }
 
 fn capture_context() -> Result<PopupData, String> {
@@ -980,16 +1022,13 @@ fn capture_context() -> Result<PopupData, String> {
     // detect the frontmost app first, then run a script that only ever talks to
     // apps we know are present (System Events / Finder) or the one browser that
     // is actually frontmost.
-    let front_raw = run_osascript(
-        r#"tell application "System Events"
-            set p to first application process whose frontmost is true
-            return (name of p) & "|||" & (unix id of p)
-        end tell"#,
-    )
-    .unwrap_or_default();
-    let mut front_it = front_raw.splitn(2, "|||");
-    let front = front_it.next().unwrap_or("").trim().to_string();
-    if let Some(pid) = front_it.next().and_then(|s| s.trim().parse::<i32>().ok()) {
+    // Frontmost app in-process (no osascript spawn). Gives name + pid; the pid is
+    // also what we reactivate on save to return focus to where the user was.
+    #[cfg(target_os = "macos")]
+    let (front, pid) = crate::accessibility::frontmost_app().unwrap_or_default();
+    #[cfg(not(target_os = "macos"))]
+    let (front, pid): (String, i32) = (String::new(), 0);
+    if pid > 0 {
         PREV_APP_PID.store(pid, Ordering::Relaxed);
     }
 
@@ -1015,24 +1054,19 @@ fn capture_context() -> Result<PopupData, String> {
     }
 
     // Browser URL + title — only for the frontmost browser, built dynamically.
-    // A non-empty URL is also our "is this a browser?" signal.
     let (url, title) = browser_url_title(&front);
-    let is_browser = url.as_deref().is_some_and(|s| !s.is_empty());
 
-    // Selected text: try the Accessibility API first — it's in-process and
-    // instant, and covers native apps. The clipboard ⌘C fallback is only useful
-    // for *browser page* selections (AX can't read web content), so we run it
-    // ONLY for browsers. For any other app the no-selection → screenshot path
-    // no longer pays the clipboard poll latency.
+    // Selected text: Accessibility API first (instant, in-process; covers native
+    // apps). If it finds nothing, fall back to the clipboard ⌘C method, which
+    // also catches selections in browsers and Electron apps (Slack/VS Code/…).
+    // The hotkey no longer auto-screenshots, so this only affects pill speed.
     let ax_text = {
         #[cfg(target_os = "macos")]
         { crate::accessibility::selected_text() }
         #[cfg(not(target_os = "macos"))]
         { None }
     };
-    let text = ax_text.or_else(|| {
-        if is_browser { capture_selected_text_via_clipboard() } else { None }
-    });
+    let text = ax_text.or_else(capture_selected_text_via_clipboard);
 
     Ok(PopupData {
         url: url.filter(|s| !s.is_empty()),
@@ -1121,7 +1155,7 @@ fn capture_selected_text_via_clipboard() -> Option<String> {
             -- Poll briefly (~240ms max), exiting the instant the clipboard fills.
             -- A real selection lands within ~100ms; this keeps the no-selection
             -- case (which precedes the screenshot) from stalling.
-            repeat 12 times
+            repeat 8 times
                 delay 0.02
                 try
                     set cur to the clipboard as text

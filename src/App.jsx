@@ -9,6 +9,9 @@ import shiroLogo from "./assets/shiro.png";
 import "./App.css";
 
 const isPopup = new URLSearchParams(window.location.search).get("window") === "popup";
+// Only the popup window is transparent (for its rounded card). The main window
+// stays opaque so maximize/resize doesn't flash a black backing.
+if (isPopup) document.documentElement.classList.add("popup");
 
 export default function App() {
   return isPopup ? <CapturePill /> : <MainApp />;
@@ -85,9 +88,10 @@ function MainApp() {
     return () => uns.forEach((u) => u?.());
   }, [refresh, load]);
 
-  // Drag & drop files onto the window (logo is the visual target).
+  // Drag & drop files anywhere on the window.
   useEffect(() => {
     let un;
+    let disposed = false;
     getCurrentWebview().onDragDropEvent((e) => {
       const p = e.payload;
       if (p.type === "over" || p.type === "enter") setDropping(true);
@@ -96,8 +100,10 @@ function MainApp() {
         setDropping(false);
         if (p.paths?.length) invoke("cmd_save_files", { paths: p.paths, notes: null }).catch(console.error);
       }
-    }).then((u) => (un = u));
-    return () => un?.();
+    }).then((u) => { if (disposed) u(); else un = u; });
+    // Guard the async-cleanup race so we never end up with two listeners
+    // (which double-saved every dropped file).
+    return () => { disposed = true; un?.(); };
   }, []);
 
   const onSearchChange = (q) => {
@@ -130,10 +136,6 @@ function MainApp() {
   return (
     <div className="app">
       <header className="topbar">
-        <div className={`brand ${dropping ? "drop" : ""}`} title="Drop files here to save">
-          <img src={shiroLogo} alt="Shiro" />
-          {dropping && <span className="brand-hint">Drop to save</span>}
-        </div>
         <div className="topbar-actions">
           <AnimatePresence initial={false} mode="wait">
             {searchOpen ? (
@@ -159,6 +161,8 @@ function MainApp() {
         </div>
       </header>
 
+      <img className="brand-float" src={shiroLogo} alt="Shiro" />
+
       {searching && (
         <div className="filters">
           {["all", "highlight", "link", "image", "file"].map((f) => (
@@ -174,7 +178,7 @@ function MainApp() {
           <div className="empty">
             <img src={shiroLogo} alt="" />
             <h3>{searching ? "Nothing matches" : "Nothing saved yet"}</h3>
-            <p>{searching ? "Try a different search." : "Press your shortcut to capture text or a screenshot, or drop files onto the logo."}</p>
+            <p>{searching ? "Try a different search." : "Press your shortcut to capture text or a screenshot, or drop files anywhere."}</p>
           </div>
         ) : (
           <div className="card-grid">
@@ -196,6 +200,16 @@ function MainApp() {
           />
         )}
       </AnimatePresence>
+
+      <AnimatePresence>
+        {dropping && (
+          <motion.div className="drop-overlay"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            transition={{ duration: 0.14 }}>
+            <div className="drop-card">Drop files to save</div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -214,9 +228,13 @@ function Card({ item, index, onClick }) {
     <motion.div
       className="card"
       onClick={onClick}
+      layout
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.32, ease: [0.16, 1, 0.3, 1], delay: Math.min((index || 0) * 0.03, 0.25) }}
+      transition={{
+        duration: 0.32, ease: [0.16, 1, 0.3, 1], delay: Math.min((index || 0) * 0.03, 0.25),
+        layout: { duration: 0.28, ease: [0.16, 1, 0.3, 1] },
+      }}
     >
       {thumb && <img className="card-thumb" src={thumb} alt="" />}
       <div className="card-body">
@@ -317,12 +335,13 @@ function Settings({ onBack }) {
     if (e.altKey) parts.push("Alt");
     if (e.shiftKey) parts.push("Shift");
     parts.push(e.code);
-    setHotkey(parts.join("+"));
+    const combo = parts.join("+");
+    setHotkey(combo);
     setListening(false);
-  };
-  const save = async () => {
-    try { await invoke("cmd_set_hotkey", { hotkey }); setSaved(true); setTimeout(() => setSaved(false), 2000); }
-    catch (e) { console.error(e); }
+    // Auto-save the moment a new combo is recorded — no Save button needed.
+    invoke("cmd_set_hotkey", { hotkey: combo })
+      .then(() => { setSaved(true); setTimeout(() => setSaved(false), 1600); })
+      .catch(console.error);
   };
   const changeLocation = async () => {
     const picked = await openDialog({ directory: true, multiple: false, title: "Choose where Shiro stores everything" });
@@ -345,8 +364,8 @@ function Settings({ onBack }) {
         <div className="sec-label">Capture</div>
         <div className="row">
           <div>
-            <div className="row-label">Global shortcut</div>
-            <div className="row-sub">Press this anywhere to open the capture pill</div>
+            <div className="row-label">Shortcut</div>
+            <div className="row-sub">Open Shiro from anywhere.</div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div className={`hotkey-badge ${listening ? "listening" : ""}`} tabIndex={0}
@@ -355,29 +374,28 @@ function Settings({ onBack }) {
               onBlur={() => setListening(false)}>
               {listening ? "Press keys…" : shortcutDisplay(hotkey)}
             </div>
-            <button className="btn btn-primary" onClick={save}>Save</button>
             {saved && <span className="saved">✓ Saved</span>}
           </div>
         </div>
-        <div className="hint">Click the badge, then press your combination (e.g. ⌘E). Needs one modifier (⌘ ⌃ ⌥ ⇧).</div>
+        <div className="hint">Click it, then press your keys.</div>
 
         <div className="sec-label">Storage</div>
         <div className="row">
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="row-label">Save location</div>
+            <div className="row-label">Saved to</div>
             <div className="row-sub" style={{ wordBreak: "break-all" }} title={storageDir}>{storageDir || "…"}</div>
           </div>
           <button className="btn btn-ghost" onClick={changeLocation} disabled={moving} style={{ whiteSpace: "nowrap" }}>
             {moving ? "Moving…" : "Change…"}
           </button>
         </div>
-        <div className="hint">Everything — highlights, links, images, files — lives here as readable files. Changing this moves your data.</div>
+        <div className="hint">Changing the loaction will move older files as well.</div>
 
         <div className="sec-label">Permissions</div>
         <div className="row">
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="row-label">Accessibility &amp; Screen Recording</div>
-            <div className="row-sub">Needed to read selected text and capture screenshots.</div>
+            <div className="row-label">Screen access</div>
+            <div className="row-sub">Lets Shiro read selected text and take screenshots.</div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span className={axTrusted ? "status-ok" : "status-no"}>{axTrusted ? "✓ Granted" : "Not granted"}</span>
@@ -385,8 +403,7 @@ function Settings({ onBack }) {
           </div>
         </div>
         <div className="hint">
-          Turn on <strong>Shiro</strong> under both lists, or <span className="linklike" onClick={() => invoke("cmd_open_accessibility_settings")}>open settings</span>.
-          In <code>tauri dev</code> the grant resets on rebuild — use a real build to make it stick.
+          Switch <strong>Shiro</strong> on in <span className="linklike" onClick={() => invoke("cmd_open_accessibility_settings")}>System Settings</span>.
         </div>
       </div>
     </div>
@@ -400,16 +417,15 @@ function CapturePill() {
   const [saving, setSaving] = useState(false);
   const [shown, setShown] = useState(false);
   const [shot, setShot] = useState(null);
-  const [freeMode, setFreeMode] = useState(false);
   const [remindOpen, setRemindOpen] = useState(false);
   const [remindAt, setRemindAt] = useState("");
   const [noteOpen, setNoteOpen] = useState(false);
   const noteRef = useRef(null);
-  const textRef = useRef(null);
+  const wrapRef = useRef(null);
 
   const reset = () => {
     setShown(false); setData({ url: null, title: null, text: null, files: [] });
-    setNote(""); setShot(null); setFreeMode(false); setRemindOpen(false); setRemindAt(""); setNoteOpen(false); setSaving(false);
+    setNote(""); setShot(null); setRemindOpen(false); setRemindAt(""); setNoteOpen(false); setSaving(false);
   };
 
   const requestClose = useCallback((restoreFocus = true) => {
@@ -423,10 +439,8 @@ function CapturePill() {
       setData({ files: [], ...e.payload });
       setNote(""); setSaving(false); setRemindOpen(false); setRemindAt(""); setNoteOpen(false);
       setShot(e.payload.screenshot ? { path: e.payload.screenshot_path, dataUrl: e.payload.screenshot } : null);
-      const free = !(e.payload.url || e.payload.text || e.payload.files?.length);
-      setFreeMode(free);
       setShown(true);
-      setTimeout(() => (free ? textRef : noteRef).current?.focus(), 0);
+      setTimeout(() => wrapRef.current?.focus(), 30);
     }).then((u) => uns.push(u));
     listen("popup-reset", reset).then((u) => uns.push(u));
     listen("popup-dismiss", () => requestClose(false)).then((u) => uns.push(u));
@@ -441,7 +455,7 @@ function CapturePill() {
   const handleSave = async () => {
     if (saving) return;
     const hasFiles = data.files?.length > 0;
-    if (!hasFiles && !data.url && !data.text?.trim() && !shot) return;
+    if (!hasFiles && !data.url && !data.text?.trim() && !shot && !note.trim()) return;
     setSaving(true);
     const remind = remindAt ? new Date(remindAt).toISOString() : null;
     try {
@@ -463,61 +477,73 @@ function CapturePill() {
     if (e.key === "Enter" && (e.metaKey || e.target.tagName === "INPUT")) { e.preventDefault(); handleSave(); }
   };
 
+  const hasText = !!(data.text && data.text.trim());
+  const hasContent = data.files?.length > 0 || !!data.url || hasText || !!shot || !!note.trim();
+  const showStack = hasContent || noteOpen || remindOpen;
+  const isFiles = data.files?.length > 0;
+
   return (
-    <div className="pill" onKeyDown={handleKeyDown}
-      style={{ opacity: shown ? 1 : 0, transform: shown ? "scale(1)" : "scale(.97)", transformOrigin: "center", transition: "opacity .15s var(--ease), transform .15s var(--ease)" }}>
-      <div className="pill-head">
-        <img src={shiroLogo} alt="Shiro" />
-        <span className="spacer" />
-      </div>
-
-      <div className="pill-content">
-        {data.files?.length > 0 && (
-          <div className="pill-files">📎 {data.files.length === 1 ? baseName(data.files[0]) : `${data.files.length} files`}</div>
+    <div
+      className="pill-wrap"
+      ref={wrapRef}
+      tabIndex={-1}
+      onKeyDown={handleKeyDown}
+      onMouseDown={(e) => { if (e.target === e.currentTarget) requestClose(true); }}
+      style={{
+        opacity: shown ? 1 : 0,
+        transform: shown ? "translateY(0)" : "translateY(6px)",
+        transition: "opacity .09s var(--ease), transform .09s var(--ease)",
+      }}
+    >
+      <AnimatePresence initial={false}>
+        {showStack && (
+          <motion.div key="stack" className="stack"
+            initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }}
+            transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}>
+            {isFiles && (
+              <div className="chip-card">📎 {data.files.length === 1 ? baseName(data.files[0]) : `${data.files.length} files`}</div>
+            )}
+            {(data.title || data.url || hasText) && (
+              <div className="chip-card">
+                {data.title && <div className="ct-title">{data.title}</div>}
+                {hasText && <div className="ct-text">{data.text}</div>}
+                {data.url && <div className="ct-url">{data.url}</div>}
+              </div>
+            )}
+            {shot && (
+              <div className="chip-card shot">
+                <img src={shot.dataUrl} alt="screenshot" />
+                <button className="shot-x" onClick={() => setShot(null)} aria-label="Remove screenshot"><IconClose /></button>
+              </div>
+            )}
+            {(noteOpen || note) && (
+              <input ref={noteRef} className="chip-input" placeholder="Add a note…"
+                value={note} onChange={(e) => setNote(e.target.value)} />
+            )}
+            {remindOpen && (
+              <input type="datetime-local" className="chip-input" value={remindAt}
+                onChange={(e) => setRemindAt(e.target.value)} />
+            )}
+          </motion.div>
         )}
-        {data.title && <div className="pill-title">{data.title}</div>}
-        {data.url && <div className="pill-url">{data.url}</div>}
-        {!freeMode && data.text && <div className="pill-quote">{data.text}</div>}
+      </AnimatePresence>
 
-        {freeMode && (
-          <textarea ref={textRef} className="pinput pill-capture" rows={2} placeholder="Type or paste anything…"
-            value={data.text || ""} onChange={(e) => setData((d) => ({ ...d, text: e.target.value }))} />
-        )}
-
-        {shot && (
-          <div className="pill-shot">
-            <img src={shot.dataUrl} alt="screenshot" />
-            <button className="shot-x" onClick={() => setShot(null)} aria-label="Remove screenshot"><IconClose /></button>
-          </div>
-        )}
-
-        <AnimatePresence initial={false}>
-          {(noteOpen || note) && (
-            <motion.input key="note" ref={noteRef} className="pinput pill-note" placeholder="Add a note…"
-              value={note} onChange={(e) => setNote(e.target.value)}
-              initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
-              transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }} />
-          )}
-          {remindOpen && (
-            <motion.input key="dt" type="datetime-local" className="dt-input" value={remindAt}
-              onChange={(e) => setRemindAt(e.target.value)}
-              initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
-              transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }} />
-          )}
-        </AnimatePresence>
-      </div>
-
-      <div className="pill-foot">
-        {!data.files?.length && (
+      <div className="bar">
+        <img className="bar-logo" src={shiroLogo} alt="Shiro" />
+        {!isFiles && (
           <button className={`icon-btn ${shot ? "active" : ""}`} onClick={attachScreenshot} title="Screenshot"><IconCamera /></button>
         )}
         <button className={`icon-btn ${noteOpen || note ? "active" : ""}`}
           onClick={() => { setNoteOpen(true); setTimeout(() => noteRef.current?.focus(), 0); }} title="Note"><IconNote /></button>
-        {!data.files?.length && (
+        {!isFiles && (
           <button className={`icon-btn ${remindOpen || remindAt ? "active" : ""}`} onClick={() => setRemindOpen((v) => !v)} title="Reminder"><IconAlarm /></button>
         )}
-        <span className="spacer" />
-        <button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? "Saving…" : "Save ↵"}</button>
+        {hasContent && (
+          <>
+            <span className="spacer" />
+            <button className="btn btn-primary save-btn" onClick={handleSave} disabled={saving}>{saving ? "…" : "Save ↵"}</button>
+          </>
+        )}
       </div>
     </div>
   );
