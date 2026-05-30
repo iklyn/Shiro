@@ -171,6 +171,7 @@ pub struct SaveRequest {
     pub url: Option<String>,
     pub title: Option<String>,
     pub text: Option<String>,
+    #[serde(default)]
     pub html: Option<String>,
     pub file_path: Option<String>,
     pub notes: Option<String>,

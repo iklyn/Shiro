@@ -70,17 +70,6 @@ button { font-family: inherit; cursor: default; }
   width: 68px; height: 68px; object-fit: contain;
   pointer-events: none; user-select: none;
 }
-.brand {
-  display: flex; align-items: center; gap: 9px;
-  padding: 5px; border-radius: var(--r-pill);
-  border: 1.5px dashed transparent; transition: background .18s var(--ease), border-color .18s var(--ease);
-  user-select: none;
-}
-.brand img { width: 34px; height: 34px; border-radius: 9px; transition: transform .18s var(--ease); }
-.brand.drop { background: var(--accent-soft); border-color: var(--accent); }
-.brand.drop img { transform: scale(1.08); }
-.brand .brand-hint { font-size: 12px; color: var(--accent); font-weight: 600; padding-right: 8px; }
-
 /* whole-window drag & drop overlay */
 .drop-overlay {
   position: fixed; inset: 0; z-index: 200; pointer-events: none;
@@ -139,33 +128,26 @@ button { font-family: inherit; cursor: default; }
 /* ── Card canvas ───────────────────────────────────── */
 .canvas { flex: 1; overflow-y: auto; padding: 20px; }
 .card-grid {
-  display: grid; gap: 16px;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  /* masonry columns — fixed count so columns always fill across the width */
+  column-count: 3;
+  column-gap: 14px;
 }
 
 .card {
-  display: flex; flex-direction: column;
+  display: block;
   background: var(--card); border: 1px solid var(--border);
-  border-radius: var(--r-md); overflow: hidden;
-  transition: transform .16s var(--ease), box-shadow .16s var(--ease), border-color .16s var(--ease);
-  min-height: 116px;
+  border-radius: var(--r-lg); overflow: hidden;
+  break-inside: avoid; /* keeps each card in one column */
+  margin-bottom: 14px;
+  cursor: pointer;
+  transition: transform .18s var(--ease), box-shadow .18s var(--ease);
 }
-.card:hover { transform: translateY(-2px); box-shadow: var(--shadow-2); border-color: var(--border2); }
-.card:active { transform: translateY(0) scale(.992); }
+.card:hover { transform: translateY(-3px) scale(1.008); box-shadow: var(--shadow-2); }
+.card:active { transform: scale(.99); }
 
-.card-thumb { width: 100%; height: 132px; object-fit: cover; background: var(--bg2); display: block; }
-.card-body { padding: 13px 15px 14px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+.card-thumb { width: 100%; height: auto; max-height: 280px; object-fit: cover; object-position: top; background: var(--bg2); display: block; }
+.card-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 5px; }
 
-.card-kind {
-  display: inline-flex; align-items: center; gap: 5px; align-self: flex-start;
-  font-size: 10px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase;
-  color: var(--text3);
-}
-.card-kind svg { width: 12px; height: 12px; }
-.card-kind.k-highlight { color: var(--k-highlight); }
-.card-kind.k-link { color: var(--k-link); }
-.card-kind.k-image { color: var(--k-image); }
-.card-kind.k-file { color: var(--k-file); }
 
 .card-title {
   font-size: 14px; font-weight: 550; color: var(--text); line-height: 1.35;
@@ -185,34 +167,68 @@ button { font-family: inherit; cursor: default; }
 .empty h3 { font-size: 15px; color: var(--text); font-weight: 600; }
 .empty p { font-size: 13px; max-width: 280px; line-height: 1.5; }
 
-/* ── Detail modal ──────────────────────────────────── */
+/* ── Modals (shared) ───────────────────────────────── */
 .scrim {
   position: fixed; inset: 0; z-index: 50; background: rgba(20,20,30,.45);
   backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center;
-  padding: 40px; animation: fadeIn .18s var(--ease);
+  padding: 40px;
 }
-@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 .modal {
-  width: 100%; max-width: 640px; max-height: 84vh; overflow-y: auto;
   background: var(--card); border-radius: var(--r-lg); box-shadow: var(--shadow-pop);
-  padding: 28px 30px; animation: pop .22s var(--ease);
+  overflow: hidden;
 }
-@keyframes pop { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
-.modal-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.modal-title { font-size: 21px; font-weight: 650; letter-spacing: -0.3px; line-height: 1.25; }
-.modal-url { font-size: 13px; color: var(--accent); word-break: break-all; margin-top: 4px; }
-.modal-url:hover { text-decoration: underline; }
-.modal-img { max-width: 100%; border-radius: var(--r-md); border: 1px solid var(--border); margin-top: 16px; display: block; }
-.modal-text { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--r-md); padding: 16px 18px; font-size: 14px; line-height: 1.65; white-space: pre-wrap; margin-top: 16px; }
-.label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; color: var(--text3); font-weight: 700; margin: 22px 0 9px; }
-.notes-area {
-  width: 100%; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--r-md);
-  padding: 13px 15px; font-size: 14px; line-height: 1.6; color: var(--text); font-family: var(--font);
-  resize: vertical; outline: none; min-height: 84px; transition: border-color .15s, box-shadow .15s;
+
+/* Content modal (highlights / links / text) */
+.modal-content { width: 100%; max-width: 600px; }
+.content-main { padding: 22px 22px 18px; max-height: 52vh; overflow-y: auto; }
+.content-img { width: 100%; border-radius: var(--r-md); display: block; margin-bottom: 14px; }
+.content-title { font-size: 19px; font-weight: 650; letter-spacing: -0.2px; line-height: 1.3; color: var(--text); }
+.content-url { font-size: 12.5px; color: var(--accent); word-break: break-all; margin-top: 5px; cursor: default; }
+.content-url:hover { text-decoration: underline; }
+.content-text { font-size: 14px; line-height: 1.65; white-space: pre-wrap; color: var(--text2); margin-top: 12px; }
+
+/* ── Image-only viewer ─────────────────────────────── */
+/* Modal shrinks to the image's natural aspect ratio — no fixed container, no black bars */
+.modal-imgview {
+  padding: 0; max-height: none; overflow: hidden;
+  width: fit-content; max-width: min(90vw, 900px);
 }
-.notes-area:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.modal-meta { font-size: 12px; color: var(--text3); margin-top: 18px; }
-.modal-actions { display: flex; gap: 10px; margin-top: 20px; }
+.imgview-wrap { position: relative; border-radius: var(--r-lg) var(--r-lg) 0 0; overflow: hidden; }
+.imgview-wrap img {
+  display: block;
+  width: auto; height: auto;          /* natural aspect ratio */
+  max-width: min(90vw, 900px);
+  max-height: 76vh;
+  min-width: 260px;
+}
+.imgview-placeholder { width: 400px; height: 300px; background: var(--bg2); }
+.imgview-note {
+  display: block; width: 100%; background: var(--card);
+  border: none; border-top: 1px solid var(--border); outline: none;
+  padding: 11px 16px; font-size: 13.5px; font-family: var(--font);
+  color: var(--text); resize: none; min-height: 56px;
+}
+.imgview-note::placeholder { color: var(--text3); }
+.imgview-details {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 9px 14px; background: var(--card);
+  border-top: 1px solid var(--border);
+  font-size: 12px; color: var(--text3);
+}
+.imgview-details span:first-child { flex: 1; }
+.imgview-finder {
+  font-size: 12px; color: var(--text3); cursor: default;
+  text-decoration: underline; text-underline-offset: 2px;
+  text-decoration-color: var(--border2);
+}
+.imgview-finder:hover { color: var(--text2); text-decoration-color: var(--text3); }
+.imgview-foot {
+  display: flex; align-items: center; gap: 4px;
+  padding: 7px 10px; background: var(--card);
+  border-top: 1px solid var(--border);
+}
+.imgview-del { color: var(--danger); }
+.imgview-del:hover { background: var(--danger-soft); }
 
 /* ── Buttons ───────────────────────────────────────── */
 .btn {
@@ -257,44 +273,80 @@ button { font-family: inherit; cursor: default; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; background: var(--bg3); padding: 1px 5px; border-radius: 5px; }
 
 /* ── Capture pill: small action bar at bottom, content stacked above ── */
+/* pill-wrap must NOT use height:100vh — that creates a full-height transparent
+   div that flashes as a vertical artifact when the window shows/hides.
+   Instead: inline-flex from bottom-right of the window, only as tall as needed. */
 .pill-wrap {
-  height: 100vh; width: 100%;
-  display: flex; flex-direction: column; justify-content: flex-end; align-items: center;
-  gap: 8px; padding: 14px;
+  position: fixed; bottom: 14px; left: 14px; right: 14px;
+  display: flex; flex-direction: column; align-items: center;
+  gap: 8px; outline: none; pointer-events: none;
 }
-.stack { display: flex; flex-direction: column; gap: 8px; width: 100%; align-items: stretch; }
+.pill-wrap:focus { outline: none; }
+/* stack and bar are the actual interactive elements */
+.pill-wrap .stack,
+.pill-wrap .bar { pointer-events: auto; }
+.stack { width: 100%; max-width: 420px; }
+.bar { width: max-content; max-width: 420px; }
+.stack { display: flex; flex-direction: column; gap: 8px; align-items: stretch; max-height: 256px; overflow-y: auto; }
 .chip-card {
   background: var(--card); border: 1px solid var(--border2); border-radius: var(--r-md);
   box-shadow: var(--shadow-1); padding: 12px 14px; font-size: 14px; color: var(--text);
-  max-height: 200px; overflow: auto;
 }
 .chip-card .ct-title { font-weight: 600; line-height: 1.3; }
-.chip-card .ct-text { line-height: 1.55; white-space: pre-wrap; margin-top: 2px; }
+.chip-card .ct-text {
+  line-height: 1.55; white-space: pre-wrap; margin-top: 2px;
+  display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden;
+}
 .chip-card .ct-url { font-size: 12.5px; color: var(--accent); margin-top: 4px; word-break: break-all; }
+.chip-card .ct-files { font-size: 13.5px; }
 .chip-card.shot { padding: 0; position: relative; overflow: hidden; }
-.chip-card.shot img { display: block; width: 100%; max-height: 200px; object-fit: contain; background: var(--bg2); }
+.chip-card.shot img { display: block; width: 100%; max-height: 130px; object-fit: cover; object-position: top; background: var(--bg2); }
 .shot-x {
   position: absolute; top: 8px; right: 8px; width: 24px; height: 24px; border: none; cursor: default;
   border-radius: var(--r-pill); background: rgba(0,0,0,.55); color: #fff;
   display: inline-flex; align-items: center; justify-content: center;
 }
 .shot-x svg { width: 13px; height: 13px; }
-.chip-input {
-  width: 100%; background: var(--card); border: 1px solid var(--border2); border-radius: var(--r-md);
-  box-shadow: var(--shadow-1); padding: 11px 14px; font-size: 14px; color: var(--text);
-  outline: none; font-family: var(--font);
+
+/* Note and reminder fold into the content card as hairline-divided sections */
+.ct-section {
+  border-top: 1px solid var(--border);
+  margin: 10px -14px -12px;
+  padding: 10px 14px 12px;
+  animation: slideIn .16s var(--ease);
 }
-.chip-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.ct-section:first-child { border-top: none; margin-top: 0; padding-top: 0; }
+@keyframes slideIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+/* Note text input: seamless, no borders */
+.ct-section input:not([type="date"]):not([type="time"]) {
+  width: 100%; background: transparent; border: none; outline: none;
+  font-size: 13.5px; color: var(--text); font-family: var(--font);
+}
+.ct-section input::placeholder { color: var(--text3); }
+/* Date/time inputs: restore native WebKit rendering so the widgets actually work */
+.ct-remind-row { display: flex; gap: 10px; align-items: center; }
+.ct-remind-row input[type="date"],
+.ct-remind-row input[type="time"] {
+  -webkit-appearance: auto; appearance: auto;
+  background: transparent; border: none;
+  padding: 0; font-size: 13px; font-family: system-ui;
+  color: var(--accent); outline: none;
+  width: auto; flex: 0 0 auto;
+}
+.ct-section-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+  color: var(--text3); font-weight: 700; margin-bottom: 5px;
+}
 
 .bar {
   display: flex; align-items: center; gap: 3px;
   background: var(--card); border: 1px solid var(--border2);
-  border-radius: var(--r-pill); padding: 6px 8px; box-shadow: var(--shadow-1);
+  border-radius: var(--r-pill); padding: 5px 8px; box-shadow: var(--shadow-1);
   -webkit-app-region: drag;
+  transition: padding .2s var(--ease);
 }
 .bar button, .bar input { -webkit-app-region: no-drag; }
 .bar-logo { width: 26px; height: 26px; object-fit: contain; margin: 0 4px 0 2px; }
-.bar .spacer { flex: 1; min-width: 6px; }
 .bar .save-btn { padding: 7px 14px; margin-left: 2px; }
 
 /* scrollbar */

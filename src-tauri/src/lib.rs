@@ -4,7 +4,7 @@ mod commands;
 mod db;
 mod storage;
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -46,38 +46,76 @@ pub fn run() {
             app.manage(db.clone());
 
             // ── Reminder notifier ───────────────────────────────────────────
-            // Poll every 30s for due reminders, fire a native notification, and
-            // clear them (one-shot). Local, no plugin needed.
+            // Event-driven: sleeps until the exact time of the next reminder
+            // (or 1 hour if none are set), and is woken immediately when the
+            // user saves a new reminder. No polling; zero wasted wakeups.
             {
-                let db_poll = db.clone();
-                std::thread::spawn(move || loop {
-                    std::thread::sleep(std::time::Duration::from_secs(30));
-                    let now = chrono::Utc::now().to_rfc3339();
-                    let mut due: Vec<(String, String)> = Vec::new();
-                    if let Ok(conn) = db_poll.lock() {
-                        if let Ok(mut stmt) = conn.prepare(
-                            "SELECT id, COALESCE(NULLIF(title,''), NULLIF(text,''), 'Reminder')
-                             FROM items WHERE remind_at IS NOT NULL AND remind_at <= ?1",
-                        ) {
-                            if let Ok(rows) = stmt.query_map([&now], |r| {
-                                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                            }) {
-                                due = rows.filter_map(|x| x.ok()).collect();
+                let waker: commands::ReminderWaker =
+                    Arc::new((Mutex::new(()), Condvar::new()));
+                app.manage(waker.clone());
+
+                let db_notif = db.clone();
+                std::thread::spawn(move || {
+                    let (lock, cvar) = &*waker;
+                    loop {
+                        // How long until the next reminder?
+                        let sleep_dur = match db_notif.lock() {
+                            Err(_) => std::time::Duration::from_secs(60),
+                            Ok(conn) => {
+                                let now_str = chrono::Utc::now().to_rfc3339();
+                                let next: Option<String> = conn
+                                    .query_row(
+                                        "SELECT MIN(remind_at) FROM items \
+                                         WHERE remind_at IS NOT NULL AND remind_at > ?1",
+                                        rusqlite::params![now_str],
+                                        |r| r.get::<_, Option<String>>(0),
+                                    )
+                                    .unwrap_or(None);
+                                match next.and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok().map(|t| t.with_timezone(&chrono::Utc))) {
+                                    Some(t) => {
+                                        let secs = (t - chrono::Utc::now()).num_seconds().max(0) as u64;
+                                        std::time::Duration::from_secs(secs.max(1))
+                                    }
+                                    None => std::time::Duration::from_secs(3600),
+                                }
+                            }
+                        };
+
+                        // Sleep until the next reminder or until signalled by a new save.
+                        let guard = lock.lock().unwrap();
+                        let _ = cvar.wait_timeout(guard, sleep_dur);
+
+                        // Fire all currently due reminders.
+                        let now = chrono::Utc::now().to_rfc3339();
+                        let mut due: Vec<(String, String)> = Vec::new();
+                        if let Ok(conn) = db_notif.lock() {
+                            if let Ok(mut stmt) = conn.prepare(
+                                "SELECT id, COALESCE(NULLIF(title,''), NULLIF(text,''), 'Reminder') \
+                                 FROM items WHERE remind_at IS NOT NULL AND remind_at <= ?1",
+                            ) {
+                                if let Ok(rows) = stmt.query_map([&now], |r| {
+                                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                                }) {
+                                    due = rows.filter_map(|x| x.ok()).collect();
+                                }
                             }
                         }
-                    }
-                    for (id, body) in due {
-                        let safe: String =
-                            body.replace('"', "'").chars().take(120).collect();
-                        let _ = std::process::Command::new("osascript")
-                            .arg("-e")
-                            .arg(format!(
-                                "display notification \"{safe}\" with title \"Shiro\" sound name \"Glass\""
-                            ))
-                            .output();
-                        if let Ok(conn) = db_poll.lock() {
-                            let _ = conn
-                                .execute("UPDATE items SET remind_at = NULL WHERE id = ?1", [&id]);
+                        for (id, body) in due {
+                            let safe: String =
+                                body.replace('"', "'").chars().take(120).collect();
+                            let _ = std::process::Command::new("osascript")
+                                .arg("-e")
+                                .arg(format!(
+                                    "display notification \"{safe}\" \
+                                     with title \"Shiro\" sound name \"Glass\""
+                                ))
+                                .output();
+                            if let Ok(conn) = db_notif.lock() {
+                                let _ = conn.execute(
+                                    "UPDATE items SET remind_at = NULL WHERE id = ?1",
+                                    [&id],
+                                );
+                            }
                         }
                     }
                 });
@@ -124,7 +162,7 @@ pub fn run() {
                 tauri::WebviewUrl::External(popup_url.parse().unwrap()),
             )
             .title("Shiro")
-            .inner_size(440.0, 360.0)
+            .inner_size(400.0, 340.0)
             .resizable(false)
             .always_on_top(true)
             .decorations(false)
@@ -226,7 +264,6 @@ pub fn run() {
             cmd_save_item,
             cmd_save_files,
             cmd_get_items,
-            cmd_get_item,
             cmd_delete_item,
             cmd_update_notes,
             cmd_search,
@@ -237,11 +274,15 @@ pub fn run() {
             cmd_get_storage_dir,
             cmd_set_storage_dir,
             cmd_open_path,
+            cmd_reveal_in_finder,
             cmd_take_screenshot,
             cmd_read_image,
             cmd_accessibility_status,
             cmd_request_accessibility,
             cmd_open_accessibility_settings,
+            cmd_get_reminders_enabled,
+            cmd_set_reminders_enabled,
+            cmd_open_notification_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running shiro");

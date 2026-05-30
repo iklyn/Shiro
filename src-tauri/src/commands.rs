@@ -1,11 +1,22 @@
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 use crate::db::{self, Db, SaveRequest};
 use crate::storage::{self, StorageDir};
+
+/// Shared waker: the reminder thread sleeps on this condvar. Any code that
+/// adds or removes a reminder signals it so the thread re-evaluates its sleep.
+pub type ReminderWaker = Arc<(Mutex<()>, Condvar)>;
+
+pub(crate) fn signal_reminder_thread(waker: &ReminderWaker) {
+    let (lock, cvar) = &**waker;
+    let _guard = lock.lock().unwrap();
+    cvar.notify_one();
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Item {
@@ -47,6 +58,7 @@ pub fn cmd_save_item(
     app: AppHandle,
     db: tauri::State<Db>,
     storage: tauri::State<StorageDir>,
+    waker: tauri::State<ReminderWaker>,
     mut req: SaveRequest,
     screenshot_path: Option<String>,
 ) -> Result<String, String> {
@@ -97,6 +109,10 @@ pub fn cmd_save_item(
     }
     // Tell the main window to refresh its list.
     let _ = app.emit("item-saved", &id);
+    // Wake the reminder thread so it can recalculate its next sleep duration.
+    if req.remind_at.is_some() {
+        signal_reminder_thread(&waker);
+    }
     Ok(id)
 }
 
@@ -305,6 +321,23 @@ pub fn cmd_open_path(storage: tauri::State<StorageDir>, path: String) -> Result<
     Ok(())
 }
 
+/// Reveal a stored file selected in Finder (open -R).
+#[tauri::command]
+pub fn cmd_reveal_in_finder(storage: tauri::State<StorageDir>, path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    let full = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        storage.lock().map_err(|e| e.to_string())?.join(p)
+    };
+    std::process::Command::new("open")
+        .arg("-R")
+        .arg(&full)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Screenshot {
@@ -397,6 +430,37 @@ pub fn cmd_request_accessibility() -> bool {
     }
 }
 
+/// Whether the user has enabled the reminders feature (stored in settings).
+/// Defaults to false — the alarm button is hidden until explicitly turned on.
+#[tauri::command]
+pub fn cmd_get_reminders_enabled(db: tauri::State<Db>) -> Result<bool, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    Ok(db::get_setting(&conn, "reminders_enabled")
+        .unwrap_or(None)
+        .map(|v| v == "true")
+        .unwrap_or(false))
+}
+
+#[tauri::command]
+pub fn cmd_set_reminders_enabled(db: tauri::State<Db>, enabled: bool) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    db::set_setting(&conn, "reminders_enabled", if enabled { "true" } else { "false" })
+        .map_err(|e| e.to_string())
+}
+
+/// Open System Settings → Notifications so the user can grant permission.
+#[tauri::command]
+pub fn cmd_open_notification_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.notifications")
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Open System Settings directly to Privacy & Security → Accessibility.
 #[tauri::command]
 pub fn cmd_open_accessibility_settings() -> Result<(), String> {
@@ -426,19 +490,6 @@ pub fn cmd_get_items(
         .map_err(|e| e.to_string())?;
 
     Ok(rows.filter_map(|r| r.ok()).collect())
-}
-
-#[tauri::command]
-pub fn cmd_get_item(db: tauri::State<Db>, id: String) -> Result<Item, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
-
-    conn.query_row(
-        "SELECT id, type, url, title, text, html, file_path, notes, image_path, created_at, updated_at, remind_at
-             FROM items WHERE id = ?1",
-        params![id],
-        row_to_item,
-    )
-    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -585,8 +636,10 @@ pub fn cmd_show_popup(app: AppHandle, data: PopupData) -> Result<(), String> {
     // the primary monitor.
     if let Ok(pos) = win.cursor_position() {
         let scale = win.scale_factor().unwrap_or(1.0);
-        let off_x = (220.0 * scale) as i32; // half of 440 → centered on cursor
-        let off_y = (300.0 * scale) as i32; // bar ≈ 60px below the cursor
+        let off_x = (200.0 * scale) as i32; // half of 400 → centered on cursor
+        // window_height(340) - bottom_pad(14) - bar_height(44) = 282
+        // bar_top = cursor_y + 10  →  window_y = cursor_y - 272
+        let off_y = (250.0 * scale) as i32;
         let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
             x: pos.x as i32 - off_x,
             y: pos.y as i32 - off_y,
