@@ -128,6 +128,11 @@ pub fn run() {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
                         let _ = hide_win.hide();
+                        // Window hidden → drop back to menu-bar-only (no Dock icon).
+                        #[cfg(target_os = "macos")]
+                        let _ = hide_win
+                            .app_handle()
+                            .set_activation_policy(tauri::ActivationPolicy::Accessory);
                     }
                 });
 
@@ -222,6 +227,12 @@ pub fn run() {
                                     if let Some(win) = app.get_webview_window("main") {
                                         let _ = win.show();
                                         let _ = win.set_focus();
+                                        // Window visible → Regular so the menu bar and
+                                        // native full-screen work (and Dock icon shows).
+                                        #[cfg(target_os = "macos")]
+                                        let _ = app.set_activation_policy(
+                                            tauri::ActivationPolicy::Regular,
+                                        );
                                     }
                                 }
                             })
@@ -230,6 +241,10 @@ pub fn run() {
                                     if let Some(win) = app.get_webview_window("main") {
                                         let _ = win.show();
                                         let _ = win.set_focus();
+                                        #[cfg(target_os = "macos")]
+                                        let _ = app.set_activation_policy(
+                                            tauri::ActivationPolicy::Regular,
+                                        );
                                     }
                                 }
                                 "capture" => {
@@ -244,11 +259,13 @@ pub fn run() {
                 }
             }
 
-            // ── macOS: menu-bar utility behaviour ────────────────────────────
-            // Accessory policy = no Dock icon, and focusing the popup no longer
-            // drags the main window forward.
+            // ── macOS: dynamic activation policy ─────────────────────────────
+            // The main window launches visible, so start in Regular (Dock icon +
+            // menu bar) — required for native full-screen to behave. When the
+            // window is hidden (close button) we flip to Accessory so background
+            // capture stays a menu-bar-only utility with no Dock icon.
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            app.set_activation_policy(tauri::ActivationPolicy::Regular);
 
             // ── Nudge the macOS Accessibility prompt on first run ────────────
             std::thread::spawn(|| {

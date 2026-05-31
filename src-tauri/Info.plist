@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Required for AppleScript Automation: lets Shiro ask the frontmost browser
+       for its active tab's URL + title so saved highlights link to their source.
+       Without this key, macOS denies Apple Events silently (no prompt). -->
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Shiro reads the active tab's URL and title from your browser so saved highlights link back to their original page.</string>
+</dict>
+</plist>

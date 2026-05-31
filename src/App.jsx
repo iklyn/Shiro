@@ -34,6 +34,29 @@ const IconHighlight = (p) => (<svg {...S(p)}><path d="M12 20h9M2 20h2l10-10-2-2L
 const IconLink = (p) => (<svg {...S(p)}><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1" /><path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1" /></svg>);
 const IconImage = (p) => (<svg {...S(p)}><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="9" cy="9" r="2" /><path d="m21 15-5-5L5 21" /></svg>);
 const IconFile = (p) => (<svg {...S(p)}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" /><path d="M14 2v6h6" /></svg>);
+const IconMusic = (p) => (<svg {...S(p)}><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>);
+const IconVideo = (p) => (<svg {...S(p)}><path d="m22 8-6 4 6 4V8Z" /><rect x="2" y="6" width="14" height="12" rx="2" /></svg>);
+const IconDoc = (p) => (<svg {...S(p)}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" /><path d="M14 2v6h6" /><path d="M16 13H8" /><path d="M16 17H8" /><path d="M10 9H8" /></svg>);
+const IconSheet = (p) => (<svg {...S(p)}><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18M3 15h18M9 3v18M15 3v18" /></svg>);
+const IconSlides = (p) => (<svg {...S(p)}><rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" /></svg>);
+const IconArchive = (p) => (<svg {...S(p)}><rect x="2" y="4" width="20" height="5" rx="1" /><path d="M4 9v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9" /><path d="M10 13h4" /></svg>);
+const IconCode = (p) => (<svg {...S(p)}><path d="m16 18 6-6-6-6M8 6l-6 6 6 6" /></svg>);
+
+const FILE_KINDS = {
+  audio:   { label: "Audio",        Icon: IconMusic,  exts: ["mp3","wav","m4a","aac","flac","ogg","oga","opus","aiff","aif","alac","wma"] },
+  video:   { label: "Video",        Icon: IconVideo,  exts: ["mp4","mov","m4v","mkv","webm","avi","wmv","flv","mpeg","mpg","3gp","ogv"] },
+  pdf:     { label: "PDF",          Icon: IconDoc,    exts: ["pdf"] },
+  doc:     { label: "Document",     Icon: IconDoc,    exts: ["doc","docx","txt","rtf","odt","pages","md","tex"] },
+  sheet:   { label: "Spreadsheet",  Icon: IconSheet,  exts: ["xls","xlsx","csv","tsv","ods","numbers"] },
+  slides:  { label: "Presentation", Icon: IconSlides, exts: ["ppt","pptx","odp","key"] },
+  archive: { label: "Archive",      Icon: IconArchive,exts: ["zip","rar","7z","tar","gz","bz2","xz","dmg","iso"] },
+  code:    { label: "Code",         Icon: IconCode,   exts: ["js","jsx","ts","tsx","py","rs","go","java","c","cpp","h","css","html","json","xml","yml","yaml","sh","rb","php","swift","kt"] },
+};
+function fileKind(path) {
+  const ext = (path?.split(".").pop() || "").toLowerCase();
+  for (const k in FILE_KINDS) if (FILE_KINDS[k].exts.includes(ext)) return { cat: k, ext, ...FILE_KINDS[k] };
+  return { cat: "generic", ext, label: ext ? ext.toUpperCase() + " file" : "File", Icon: IconFile };
+}
 
 const KIND = {
   highlight: { label: "Highlight", Icon: IconHighlight, cls: "k-highlight" },
@@ -133,10 +156,10 @@ function MainApp() {
     refresh();
   };
 
-  if (view === "settings") return <Settings onBack={() => setView("library")} />;
-
   return (
-    <div className="app">
+    <>
+    <div className="app" aria-hidden={view === "settings"}
+      style={view === "settings" ? { visibility: "hidden", pointerEvents: "none" } : undefined}>
       <header className="topbar">
         <div className="topbar-actions">
           <AnimatePresence initial={false} mode="wait">
@@ -214,6 +237,17 @@ function MainApp() {
         )}
       </AnimatePresence>
     </div>
+
+    <AnimatePresence>
+      {view === "settings" && (
+        <motion.div className="settings-overlay" key="settings"
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}>
+          <Settings onBack={() => setView("library")} />
+        </motion.div>
+      )}
+    </AnimatePresence>
+    </>
   );
 }
 
@@ -237,6 +271,7 @@ function MasonryGrid({ items, renderCard }) {
       // 120 ms debounce — fires once the user stops dragging the resize handle
       tid = setTimeout(() => {
         const w = el.clientWidth;
+        if (w === 0) return; // hidden (e.g. settings open) — keep current column count
         setCols(Math.max(1, Math.min(6, Math.floor((w + GAP) / (MIN_COL + GAP)))));
       }, 120);
     };
@@ -277,9 +312,65 @@ function Card({ item, index, onClick }) {
 
   // For file items, the url is the original absolute source path — not useful to display.
   const snippet = item.text || (item.type !== "file" ? item.url : null) || "";
+  const isLink = item.type === "link" && !!item.url;
+  const isFile = item.type === "file" && !isImagePath(item.file_path) && !thumb;
+  const foot = (
+    <div className="card-foot">
+      {item.remind_at && <span className="bell"><IconAlarm /> {new Date(item.remind_at).toLocaleDateString()}</span>}
+      <span style={{ marginLeft: "auto" }}>{relativeTime(item.created_at)}</span>
+    </div>
+  );
+
+  let body;
+  if (isLink) {
+    const li = linkInfo(item.url);
+    body = (
+      <>
+        <div className="linkcard-banner"
+          style={{ background: `linear-gradient(135deg, hsl(${li.hue} 62% 58%), hsl(${(li.hue + 38) % 360} 60% 46%))` }}>
+          <div className="linkcard-fav">
+            <span className="linkcard-letter">{li.letter}</span>
+          </div>
+        </div>
+        <div className="card-body">
+          <div className="card-title">{item.title || li.domain}</div>
+          <div className="card-snippet">{li.domain}{li.path}</div>
+          {foot}
+        </div>
+      </>
+    );
+  } else if (isFile) {
+    const fk = fileKind(item.file_path || item.title);
+    body = (
+      <>
+        <div className="filecard-banner">
+          {fk.cat === "audio" && <span className="filecard-wave" aria-hidden />}
+          <span className="filecard-glyph"><fk.Icon /></span>
+          {fk.ext && <span className="filecard-ext">{fk.ext.toUpperCase()}</span>}
+        </div>
+        <div className="card-body">
+          <div className="card-title">{item.title || baseName(item.file_path) || "File"}</div>
+          <div className="card-snippet">{fk.label}</div>
+          {foot}
+        </div>
+      </>
+    );
+  } else if (thumb) {
+    body = <img className="card-thumb" src={thumb} alt="" />;
+  } else {
+    body = (
+      <div className="card-body">
+        <div className="card-title">{item.title || snippet || "Untitled"}</div>
+        {item.title && snippet && <div className="card-snippet">{snippet}</div>}
+        {foot}
+      </div>
+    );
+  }
+
+  const flat = isLink || isFile;
   return (
     <motion.div
-      className={`card${!thumb ? " card-text" : ""}`}
+      className={`card${!thumb && !flat ? " card-text" : ""}`}
       onClick={onClick}
       layout
       initial={{ opacity: 0, y: 10 }}
@@ -289,17 +380,7 @@ function Card({ item, index, onClick }) {
         layout: { duration: MASONRY_DUR, ease: MASONRY_EASE },
       }}
     >
-      {thumb && <img className="card-thumb" src={thumb} alt="" />}
-      {!thumb && (
-        <div className="card-body">
-          <div className="card-title">{item.title || snippet || "Untitled"}</div>
-          {item.title && snippet && <div className="card-snippet">{snippet}</div>}
-          <div className="card-foot">
-            {item.remind_at && <span className="bell"><IconAlarm /> {new Date(item.remind_at).toLocaleDateString()}</span>}
-            <span style={{ marginLeft: "auto" }}>{relativeTime(item.created_at)}</span>
-          </div>
-        </div>
-      )}
+      {body}
     </motion.div>
   );
 }
@@ -342,9 +423,11 @@ function getAnchor(index) {
   return { x: a.x, y: a.y + lap * 44, rot: a.rot };
 }
 
-function StickyNote({ card, index, onTextChange, onDelete, peekMode }) {
+function StickyNote({ card, index, onTextChange, onDelete, peekMode, href }) {
   const anchor  = getAnchor(index);
-  const color   = STICKY_COLORS[index % STICKY_COLORS.length];
+  const color   = href ? "#E8F0FE" : STICKY_COLORS[index % STICKY_COLORS.length];
+  let hrefDomain = href || "";
+  try { if (href) hrefDomain = new URL(href).hostname.replace(/^www\./, ""); } catch {}
   const phase   = index * 1.05;
   const peekDir = anchor.x < 0 ? -220 : 220;
 
@@ -404,18 +487,29 @@ function StickyNote({ card, index, onTextChange, onDelete, peekMode }) {
     >
       <div className="sn-header">
         <span className="sn-grip" />
-        <button className="sn-del" onClick={(e) => { e.stopPropagation(); onDelete(card.id); }}>
-          <IconClose />
-        </button>
+        {!href && (
+          <button className="sn-del" onClick={(e) => { e.stopPropagation(); onDelete(card.id); }}>
+            <IconClose />
+          </button>
+        )}
       </div>
-      <textarea
-        className="sn-body"
-        value={card.text}
-        onChange={(e) => onTextChange(card.id, e.target.value)}
-        placeholder="Note…"
-        onPointerDown={(e) => e.stopPropagation()}
-        autoFocus={!card.text}
-      />
+      {href ? (
+        <div className="sn-body sn-source" title={href}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); openUrl(href); }}>
+          <span className="sn-source-label">Source</span>
+          <span className="sn-source-url">{hrefDomain}</span>
+        </div>
+      ) : (
+        <textarea
+          className="sn-body"
+          value={card.text}
+          onChange={(e) => onTextChange(card.id, e.target.value)}
+          placeholder="Note…"
+          onPointerDown={(e) => e.stopPropagation()}
+          autoFocus={!card.text}
+        />
+      )}
     </motion.div>
   );
 }
@@ -442,6 +536,63 @@ function NoteStack({ cards, onPop }) {
   );
 }
 
+// Convert a rich clipboard HTML fragment into clean Markdown — headings, lists,
+// bold/italic, links, blockquotes, code. Stored as the item's text so both the
+// on-disk .md file and the in-app renderMarkdown view look tidy.
+function htmlToMarkdown(html) {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  doc.querySelectorAll("script, style, noscript, head, meta, link").forEach(el => el.remove());
+
+  const inline = (node) => Array.from(node.childNodes).map(walk).join("");
+
+  const walk = (node) => {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent.replace(/\s+/g, " ");
+    if (node.nodeType !== Node.ELEMENT_NODE) return "";
+    const tag = node.tagName.toLowerCase();
+    switch (tag) {
+      case "h1": return `\n# ${inline(node).trim()}\n\n`;
+      case "h2": return `\n## ${inline(node).trim()}\n\n`;
+      case "h3": return `\n### ${inline(node).trim()}\n\n`;
+      case "h4": case "h5": case "h6": return `\n### ${inline(node).trim()}\n\n`;
+      case "strong": case "b": { const t = inline(node).trim(); return t ? `**${t}**` : ""; }
+      case "em": case "i": { const t = inline(node).trim(); return t ? `*${t}*` : ""; }
+      case "code": return node.closest("pre") ? inline(node) : `\`${inline(node).trim()}\``;
+      case "pre": return `\n\`\`\`\n${node.textContent.trim()}\n\`\`\`\n\n`;
+      case "br": return "\n";
+      case "img": {
+        // Only keep absolute http(s) images (relative/data URLs won't render).
+        const src = node.getAttribute("src") || "";
+        const alt = (node.getAttribute("alt") || "").trim();
+        return /^https?:\/\//i.test(src) ? `\n\n![${alt}](${src})\n\n` : "";
+      }
+      case "figure": return inline(node);
+      case "figcaption": { const t = inline(node).trim(); return t ? `\n*${t}*\n\n` : ""; }
+      case "a": {
+        const t = inline(node).trim(); const href = node.getAttribute("href");
+        return href && t && !href.startsWith("javascript:") ? `[${t}](${href})` : t;
+      }
+      case "blockquote":
+        return inline(node).trim().split("\n").map(l => `> ${l}`).join("\n") + "\n\n";
+      case "ul": case "ol": {
+        const ordered = tag === "ol";
+        const items = Array.from(node.children).filter(c => c.tagName.toLowerCase() === "li");
+        return "\n" + items.map((li, i) =>
+          `${ordered ? `${i + 1}.` : "-"} ${inline(li).trim()}`).join("\n") + "\n\n";
+      }
+      case "p": case "div": case "section": case "article": {
+        const t = inline(node).trim();
+        return t ? `${t}\n\n` : "";
+      }
+      default: return inline(node);
+    }
+  };
+
+  return walk(doc.body)
+    .replace(/\n{3,}/g, "\n\n")   // collapse extra blank lines
+    .replace(/[ \t]+\n/g, "\n")   // trim trailing spaces
+    .trim();
+}
+
 function sanitizeHtml(html) {
   const doc = new DOMParser().parseFromString(html, "text/html");
   doc.querySelectorAll("script, style, link, meta, head, iframe, object, embed, form, input, button").forEach(el => el.remove());
@@ -458,13 +609,17 @@ function sanitizeHtml(html) {
 
 function parseInline(text) {
   const parts = [];
-  const re = /(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`)/g;
+  // image ![alt](src) | link [text](url) | **bold** | *italic* | `code`
+  const re = /(!\[([^\]]*)\]\(([^)]+)\)|\[([^\]]+)\]\(([^)]+)\)|\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`)/g;
   let last = 0, m;
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) parts.push(text.slice(last, m.index));
-    if (m[2] !== undefined) parts.push(<strong key={m.index}>{m[2]}</strong>);
-    else if (m[3] !== undefined) parts.push(<em key={m.index}>{m[3]}</em>);
-    else if (m[4] !== undefined) parts.push(<code key={m.index}>{m[4]}</code>);
+    if (m[3] !== undefined) parts.push(<img key={m.index} className="content-inline-img" src={m[3]} alt={m[2]} loading="lazy" />);
+    else if (m[4] !== undefined) parts.push(
+      <a key={m.index} onClick={(e) => { e.stopPropagation(); openUrl(m[5]); }}>{m[4]}</a>);
+    else if (m[6] !== undefined) parts.push(<strong key={m.index}>{m[6]}</strong>);
+    else if (m[7] !== undefined) parts.push(<em key={m.index}>{m[7]}</em>);
+    else if (m[8] !== undefined) parts.push(<code key={m.index}>{m[8]}</code>);
     last = m.index + m[0].length;
   }
   if (last < text.length) parts.push(text.slice(last));
@@ -474,15 +629,32 @@ function parseInline(text) {
 function renderMarkdown(text) {
   if (!text) return null;
   return text.trim().split(/\n{2,}/).map((block, i) => {
+    // Code fence
+    if (/^```/.test(block)) {
+      return <pre key={i}><code>{block.replace(/^```[^\n]*\n?/, "").replace(/\n?```$/, "")}</code></pre>;
+    }
     const lines = block.split("\n");
+    // Standalone image
+    if (lines.length === 1) {
+      const im = lines[0].match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+      if (im) return <img key={i} className="content-md-img" src={im[2]} alt={im[1]} loading="lazy" />;
+    }
     // Heading (single line)
     if (lines.length === 1) {
       const m = lines[0].match(/^(#{1,3})\s+(.+)/);
       if (m) {
         const level = m[1].length;
         const Tag = `h${level}`;
-        return <Tag key={i} className={`md-h${level}`}>{m[2]}</Tag>;
+        return <Tag key={i} className={`md-h${level}`}>{parseInline(m[2])}</Tag>;
       }
+    }
+    // Ordered list
+    if (lines.length > 0 && lines.every(l => /^\d+\.\s/.test(l))) {
+      return (
+        <ol key={i} className="md-ul">
+          {lines.map((l, j) => <li key={j}>{parseInline(l.replace(/^\d+\.\s+/, ""))}</li>)}
+        </ol>
+      );
     }
     // Bullet list
     if (lines.length > 0 && lines.every(l => /^[-*]\s/.test(l))) {
@@ -511,6 +683,8 @@ function DetailModal({ item, onClose, onDelete, onSaved }) {
     || (item.type === "file" && isImagePath(item.file_path))
     || !!item.image_path;
   const imgPath = isImageOnly ? (item.image_path || item.file_path) : null;
+  const isFileItem = item.type === "file" && !isImageOnly;
+  const isLinkItem = item.type === "link" && !!item.url && !isImageOnly;
 
   const [noteCards, setNoteCards] = useState(() => parseNoteCards(item.notes));
   const [img, setImg]             = useState(null);
@@ -615,11 +789,28 @@ function DetailModal({ item, onClose, onDelete, onSaved }) {
           animate={{ clipPath: detailsOpen ? "inset(0 0% 0 0)" : "inset(0 100% 0 0)" }}
           initial={false}
           transition={{ duration: 0.46, ease: [0.16, 1, 0.3, 1], delay: detailsOpen ? 0.1 : 0 }}>
-          <span style={{ overflow: "hidden", textOverflow: "ellipsis", flex: 1 }}>Saved {new Date(item.created_at).toLocaleString()}</span>
+          <span style={{ flexShrink: 0, whiteSpace: "nowrap" }}>Saved {new Date(item.created_at).toLocaleString()}</span>
           {extraDetails}
-          <button className="icon-btn" style={{ flexShrink: 0 }} onClick={() => setDetailsOpen(false)}><IconChevLL /></button>
         </motion.div>
       </div>
+      {/* Close-details button lives beside "Add note" (not inside the scrolling
+          panel), so its circle never gets clipped. Mirrors the open-chevron's
+          motion: on reveal it waits for the panel, then slides into place
+          (x:30→0); on close it slides out and collapses immediately. */}
+      <AnimatePresence>
+        {detailsOpen && (
+          <motion.button key="close-details" className="icon-btn"
+            style={{ flexShrink: 0, overflow: "hidden" }}
+            initial={{ opacity: 0, width: 0, x: -30 }}
+            animate={{ opacity: 1, width: 36, x: 0,
+              transition: { duration: 0.26, ease: [0.16, 1, 0.3, 1], delay: 0.2 } }}
+            exit={{ opacity: 0, width: 0, x: -30,
+              transition: { duration: 0.24, ease: [0.16, 1, 0.3, 1] } }}
+            onClick={() => setDetailsOpen(false)}>
+            <IconChevLL />
+          </motion.button>
+        )}
+      </AnimatePresence>
       <button className={`sn-add-note-btn${noteCards.length > 0 ? " has-notes" : ""}`}
         onClick={addNoteCard}>
         <IconNote />
@@ -630,10 +821,18 @@ function DetailModal({ item, onClose, onDelete, onSaved }) {
   );
 
   // ── Shared scrim wrapper with floating sticky notes ────────────────────────
+  const hasSource = !!(item.url && item.type !== "file");
   const stickyLayer = (
     <AnimatePresence>
+      {/* Source card rendered first at a STABLE index 0 so it owns that slot;
+          user notes are offset by one so a freshly added note never spawns
+          underneath it. */}
+      {hasSource && (
+        <StickyNote key="__source__" card={{ id: "__source__", text: item.url }}
+          index={0} href={item.url} peekMode={peekMode} />
+      )}
       {noteCards.map((card, i) => (
-        <StickyNote key={card.id} card={card} index={i}
+        <StickyNote key={card.id} card={card} index={hasSource ? i + 1 : i}
           onTextChange={updateNoteCard} onDelete={deleteNoteCard}
           peekMode={peekMode} />
       ))}
@@ -673,22 +872,56 @@ function DetailModal({ item, onClose, onDelete, onSaved }) {
         initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.96 }} transition={spring}>
         <div className="content-main">
-          {img && <img className="content-img" src={img} alt="" />}
-          {item.title && <div className="content-title">{item.title}</div>}
-          {item.html
-            ? <div className="content-body" dangerouslySetInnerHTML={{ __html: sanitizeHtml(item.html) }} />
-            : item.text && <div className="content-body">{renderMarkdown(item.text)}</div>
-          }
+          {isLinkItem ? (() => {
+            const li = linkInfo(item.url);
+            return (
+              <div className="linkview" onClick={() => openUrl(item.url)}>
+                <div className="linkview-banner"
+                  style={{ background: `linear-gradient(135deg, hsl(${li.hue} 62% 58%), hsl(${(li.hue + 38) % 360} 60% 46%))` }}>
+                  <div className="linkview-fav">
+                    <span className="linkview-letter">{li.letter}</span>
+                  </div>
+                </div>
+                <div className="linkview-meta">
+                  <div className="linkview-domain">{item.title || li.domain}</div>
+                  <div className="linkview-url">{item.url}</div>
+                  <span className="linkview-open">Open link ↗</span>
+                </div>
+              </div>
+            );
+          })() : isFileItem ? (() => {
+            const fk = fileKind(item.file_path || item.title);
+            return (
+              <div className="fileview" onClick={() => invoke("cmd_open_path", { path: item.file_path })}>
+                <div className="fileview-glyph">
+                  {fk.cat === "audio" && <span className="fileview-wave" aria-hidden />}
+                  <fk.Icon />
+                </div>
+                <div className="fileview-name">{item.title || baseName(item.file_path) || "File"}</div>
+                <div className="fileview-type">{fk.label}{fk.ext ? " · " + fk.ext.toUpperCase() : ""}</div>
+                <span className="fileview-open">Open ↗</span>
+              </div>
+            );
+          })() : (
+            <>
+              {img && <img className="content-img" src={img} alt="" />}
+              {item.title && <div className="content-title">{item.title}</div>}
+              {item.html
+                ? <div className="content-body" dangerouslySetInnerHTML={{ __html: sanitizeHtml(item.html) }} />
+                : item.text && <div className="content-body">{renderMarkdown(item.text)}</div>
+              }
+            </>
+          )}
         </div>
         {detailsStrip(<>
           {item.remind_at && <span style={{ flexShrink: 0 }}>· Reminder {new Date(item.remind_at).toLocaleString()}</span>}
-          {item.url && item.type !== "file" && (() => {
-            let domain = item.url;
-            try { domain = new URL(item.url).hostname.replace(/^www\./, ""); } catch {}
-            return <span style={{ overflow: "hidden", textOverflow: "ellipsis", flexShrink: 1, minWidth: 0 }}>{domain}</span>;
-          })()}
+          {item.url && item.type !== "file" && (
+            // "Source" link — full URL in the tooltip, click opens the exact URL.
+            <span className="imgview-finder" title={item.url} style={{ flexShrink: 0 }}
+              onClick={() => openUrl(item.url)}>Source</span>
+          )}
+          {item.file_path && <span className="imgview-finder" style={{ flexShrink: 0 }} onClick={() => invoke("cmd_open_path", { path: item.file_path })}>Open</span>}
           {item.file_path && <span className="imgview-finder" style={{ flexShrink: 0 }} onClick={() => invoke("cmd_reveal_in_finder", { path: item.file_path })}>Show in Finder</span>}
-          {item.url && item.type !== "file" && <span className="imgview-finder" style={{ flexShrink: 0 }} onClick={() => openUrl(item.url)}>Open link</span>}
         </>)}
       </motion.div>
     </motion.div>
@@ -908,8 +1141,18 @@ function CapturePill() {
         await invoke("cmd_save_files", { paths: data.files, notes: note || null });
       } else {
         const type = data.text?.trim() ? "highlight" : data.url ? "link" : "highlight";
+        // Prefer clean Markdown converted from the rich clipboard HTML; fall back
+        // to the plain selection. Stored as `text` so the .md file and the in-app
+        // view both render formatted. We no longer persist raw HTML.
+        let mdText = data.text ?? null;
+        // Only treat it as rich HTML if it actually contains tags — guards against
+        // raw clipboard dumps (e.g. AppleScript «data …») leaking through.
+        if (data.html?.trim() && /<[a-z][\s\S]*>/i.test(data.html)) {
+          try { const md = htmlToMarkdown(data.html); if (md.trim()) mdText = md; }
+          catch (err) { console.error("html→md failed", err); }
+        }
         await invoke("cmd_save_item", {
-          req: { type, url: data.url ?? null, title: data.title ?? null, text: data.text ?? null, html: data.html ?? null, file_path: null, notes: note || null, remind_at: remind },
+          req: { type, url: data.url ?? null, title: data.title ?? null, text: mdText, html: null, file_path: null, notes: note || null, remind_at: remind },
           screenshotPath: shot?.path ?? null,
         });
       }
@@ -970,11 +1213,10 @@ function CapturePill() {
             {/* Content + note + reminder — one unified card with hairline dividers */}
             {!isFiles && (data.title || data.url || hasText || noteOpen || !!note || remindOpen) && (
               <div className="chip-card">
-                {(data.title || data.url || hasText) && (
+                {(data.title || hasText) && (
                   <>
                     {data.title && <div className="ct-title">{data.title}</div>}
                     {hasText && <div className="ct-text">{data.text}</div>}
-                    {data.url && <div className="ct-url">{data.url}</div>}
                   </>
                 )}
                 {(noteOpen || !!note) && (
@@ -1062,6 +1304,19 @@ function shortcutDisplay(str) {
   return str.split("+").map((p) => (m[p] || (p.startsWith("Key") ? p.slice(3) : p.startsWith("Digit") ? p.slice(5) : p))).join("");
 }
 function baseName(path) { return path?.split("/").pop() || path || ""; }
+// Parse a URL into the pieces a link preview needs, with a deterministic hue
+// (from the domain) for the fallback gradient tile.
+function linkInfo(url) {
+  let domain = url || "", path = "";
+  try {
+    const u = new URL(url);
+    domain = u.hostname.replace(/^www\./, "");
+    path = (u.pathname + u.search).replace(/\/+$/, "");
+  } catch {}
+  let h = 0;
+  for (let i = 0; i < domain.length; i++) h = (h * 31 + domain.charCodeAt(i)) % 360;
+  return { domain, path: path && path !== "" ? path : "", letter: (domain[0] || "?").toUpperCase(), hue: h };
+}
 function isImagePath(path) {
   if (!path) return false;
   const ext = path.split(".").pop()?.toLowerCase();

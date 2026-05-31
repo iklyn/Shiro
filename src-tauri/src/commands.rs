@@ -1108,9 +1108,6 @@ fn capture_context() -> Result<PopupData, String> {
         return Ok(PopupData { files, ..Default::default() });
     }
 
-    // Browser URL + title — only for the frontmost browser, built dynamically.
-    let (url, title) = browser_url_title(&front);
-
     // Selected text: Accessibility API first (instant, in-process; covers native
     // apps). If it finds nothing, fall back to the clipboard ⌘C method, which
     // also catches selections in browsers and Electron apps (Slack/VS Code/…).
@@ -1131,6 +1128,17 @@ fn capture_context() -> Result<PopupData, String> {
         }
     };
 
+    // URL via the address-bar keyboard shortcut (browsers only): the text is
+    // already captured, so it's safe to move focus. Cmd+L selects the address bar,
+    // Cmd+C copies the URL, Esc returns to the page. Uses the keystroke
+    // (Accessibility) permission — no Automation prompt — and works for both Safari
+    // and Chromium (incl. Atlas). The page title isn't available this way.
+    #[cfg(target_os = "macos")]
+    let url = browser_url_via_keyboard(&front);
+    #[cfg(not(target_os = "macos"))]
+    let url: Option<String> = None;
+    let title: Option<String> = None;
+
     Ok(PopupData {
         url: url.filter(|s| !s.is_empty()),
         title: title.filter(|s| !s.is_empty()),
@@ -1139,6 +1147,56 @@ fn capture_context() -> Result<PopupData, String> {
         files: vec![],
         ..Default::default()
     })
+}
+
+/// Grab the current page URL by simulating the address-bar shortcut: Cmd+L
+/// (focus + select the URL) → Cmd+C (copy) → Esc (return to page). Restores the
+/// clipboard afterward. Uses synthetic keystrokes (Accessibility permission) so
+/// there's no Automation prompt, and Cmd+L is universal across Safari/Chromium.
+///
+/// Gated to known browsers — firing Cmd+L into an arbitrary app could do anything.
+#[cfg(target_os = "macos")]
+fn browser_url_via_keyboard(front: &str) -> Option<String> {
+    const BROWSERS: &[&str] = &[
+        "Safari", "Safari Technology Preview", "Orion",
+        "Google Chrome", "Google Chrome Canary", "Chromium", "Brave Browser",
+        "Microsoft Edge", "Arc", "Vivaldi", "Opera", "Opera GX",
+        "ChatGPT Atlas", "Atlas", "Dia", "SigmaOS", "Comet",
+    ];
+    if !BROWSERS.contains(&front) {
+        return None;
+    }
+    // Cmd+L focuses + selects the address bar; clear the clipboard, Cmd+C, then
+    // POLL until it fills — the copy lands a beat after the keystroke, so a fixed
+    // delay races the focus change and copies nothing. Esc returns to the page;
+    // the original clipboard is restored.
+    let script = r#"
+        set oldClip to ""
+        try
+            set oldClip to the clipboard as text
+        end try
+        tell application "System Events" to keystroke "l" using command down
+        delay 0.12
+        set the clipboard to ""
+        tell application "System Events" to keystroke "c" using command down
+        set u to ""
+        repeat 15 times
+            delay 0.02
+            try
+                set u to the clipboard as text
+            on error
+                set u to ""
+            end try
+            if u is not "" then exit repeat
+        end repeat
+        tell application "System Events" to key code 53
+        set the clipboard to oldClip
+        return u
+    "#;
+    run_osascript(script)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| s.starts_with("http"))
 }
 
 fn run_osascript(script: &str) -> Result<String, String> {
@@ -1153,38 +1211,6 @@ fn run_osascript(script: &str) -> Result<String, String> {
         return Err(err);
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
-}
-
-/// Ask the frontmost browser for its active tab's URL + title. Returns
-/// (None, None) for non-browsers. The script only references the one app that
-/// is frontmost, so it always compiles.
-fn browser_url_title(front: &str) -> (Option<String>, Option<String>) {
-    // (tab accessor, title property) per browser family.
-    let (tab, title_prop) = match front {
-        "Google Chrome" | "Arc" | "Brave Browser" | "Microsoft Edge" | "Chromium"
-        | "Vivaldi" | "Opera" => ("active tab", "title"),
-        "Safari" | "Safari Technology Preview" => ("current tab", "name"),
-        _ => return (None, None),
-    };
-
-    let script = format!(
-        r#"tell application "{front}"
-            set u to URL of {tab} of front window
-            set t to {title_prop} of {tab} of front window
-            return u & "|||" & t
-        end tell"#
-    );
-
-    match run_osascript(&script) {
-        Ok(out) => {
-            let mut parts = out.splitn(2, "|||");
-            (
-                parts.next().map(|s| s.trim().to_string()),
-                parts.next().map(|s| s.trim().to_string()),
-            )
-        }
-        Err(_) => (None, None),
-    }
 }
 
 /// Copy the current selection from the frontmost app: clear the clipboard, send
@@ -1245,12 +1271,35 @@ fn capture_selected_text_via_clipboard() -> Option<(String, Option<String>)> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())?;
 
-    // After the text is captured the clipboard still holds the selection.
-    // Try to read the HTML type too — browsers always write both text and HTML.
+    // After the text is captured the clipboard still holds the selection. Read
+    // the HTML flavour too — browsers write both. osascript renders raw data as
+    // «data HTML3C6D...» (hex of the bytes), so decode it back to real HTML.
     let html = run_osascript("the clipboard as «class HTML»")
         .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+        .and_then(|s| decode_applescript_html_data(&s))
+        .filter(|s| !s.trim().is_empty());
 
     Some((text, html))
+}
+
+/// osascript prints raw clipboard data as `«data HTML3C6D...»` where the trailing
+/// hex is the UTF-8 HTML bytes. Strip the wrapper and hex-decode back to a string.
+fn decode_applescript_html_data(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    // If it's already plain HTML (rare), use it as-is.
+    if !s.starts_with('«') {
+        return if s.is_empty() { None } else { Some(s.to_string()) };
+    }
+    let inner = s.strip_prefix('«')?.strip_suffix('»')?; // data HTML3C6D...
+    let hex = inner.strip_prefix("data ").unwrap_or(inner);
+    // Drop the 4-char type code ("HTML", "utxt", etc.) that precedes the hex.
+    let hex = hex.get(4..).unwrap_or("");
+    if hex.len() < 2 || hex.len() % 2 != 0 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let bytes: Option<Vec<u8>> = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
+        .collect();
+    Some(String::from_utf8_lossy(&bytes?).into_owned())
 }
