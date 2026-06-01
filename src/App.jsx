@@ -160,7 +160,7 @@ function MainApp() {
     <>
     <div className="app" aria-hidden={view === "settings"}
       style={view === "settings" ? { visibility: "hidden", pointerEvents: "none" } : undefined}>
-      <header className="topbar">
+      <header className="topbar" data-tauri-drag-region>
         <div className="topbar-actions">
           <AnimatePresence initial={false} mode="wait">
             {searchOpen ? (
@@ -310,10 +310,17 @@ function Card({ item, index, onClick }) {
     return () => { alive = false; };
   }, [item.id]);
 
-  // For file items, the url is the original absolute source path — not useful to display.
-  const snippet = item.text || (item.type !== "file" ? item.url : null) || "";
-  const isLink = item.type === "link" && !!item.url;
+  // A URL copied as plain text (highlight type) should display like a link.
+  const textIsUrl = /^https?:\/\//i.test((item.text || "").trim());
+  const urlForLink = item.url || (textIsUrl ? item.text : null);
+  const isLink = !!(urlForLink && (item.type === "link" || textIsUrl));
   const isFile = item.type === "file" && !isImagePath(item.file_path) && !thumb;
+
+  // Never show raw URLs as text — always prettify.
+  const displaySnippet = textIsUrl
+    ? prettyUrl(item.text)
+    : item.text || (item.type !== "file" ? prettyUrl(item.url) : null) || "";
+
   const foot = (
     <div className="card-foot">
       {item.remind_at && <span className="bell"><IconAlarm /> {new Date(item.remind_at).toLocaleDateString()}</span>}
@@ -323,21 +330,13 @@ function Card({ item, index, onClick }) {
 
   let body;
   if (isLink) {
-    const li = linkInfo(item.url);
+    const li = linkInfo(urlForLink);
     body = (
-      <>
-        <div className="linkcard-banner"
-          style={{ background: `linear-gradient(135deg, hsl(${li.hue} 62% 58%), hsl(${(li.hue + 38) % 360} 60% 46%))` }}>
-          <div className="linkcard-fav">
-            <span className="linkcard-letter">{li.letter}</span>
-          </div>
-        </div>
-        <div className="card-body">
-          <div className="card-title">{item.title || li.domain}</div>
-          <div className="card-snippet">{li.domain}{li.path}</div>
-          {foot}
-        </div>
-      </>
+      <div className="card-body">
+        <div className="card-title">{item.title || li.domain}</div>
+        <div className="card-snippet">{li.domain}{li.path ? li.path.slice(0, 48) + (li.path.length > 48 ? "…" : "") : ""}</div>
+        {foot}
+      </div>
     );
   } else if (isFile) {
     const fk = fileKind(item.file_path || item.title);
@@ -346,12 +345,14 @@ function Card({ item, index, onClick }) {
         <div className="filecard-banner">
           {fk.cat === "audio" && <span className="filecard-wave" aria-hidden />}
           <span className="filecard-glyph"><fk.Icon /></span>
-          {fk.ext && <span className="filecard-ext">{fk.ext.toUpperCase()}</span>}
         </div>
         <div className="card-body">
           <div className="card-title">{item.title || baseName(item.file_path) || "File"}</div>
-          <div className="card-snippet">{fk.label}</div>
-          {foot}
+          <div className="card-foot">
+            <span style={{ color: "var(--text3)", fontSize: 12 }}>{fk.label}</span>
+            {item.remind_at && <span className="bell"><IconAlarm /> {new Date(item.remind_at).toLocaleDateString()}</span>}
+            <span style={{ marginLeft: "auto" }}>{relativeTime(item.created_at)}</span>
+          </div>
         </div>
       </>
     );
@@ -360,9 +361,12 @@ function Card({ item, index, onClick }) {
   } else {
     body = (
       <div className="card-body">
-        <div className="card-title">{item.title || snippet || "Untitled"}</div>
-        {item.title && snippet && <div className="card-snippet">{snippet}</div>}
-        {foot}
+        <div className="card-title">{item.title || displaySnippet || "Untitled"}</div>
+        {item.title && displaySnippet && <div className="card-snippet">{displaySnippet}</div>}
+        <div className="card-foot">
+          {item.remind_at && <span className="bell"><IconAlarm /> {new Date(item.remind_at).toLocaleDateString()}</span>}
+          <span style={{ marginLeft: "auto" }}>{relativeTime(item.created_at)}</span>
+        </div>
       </div>
     );
   }
@@ -884,7 +888,7 @@ function DetailModal({ item, onClose, onDelete, onSaved }) {
                 </div>
                 <div className="linkview-meta">
                   <div className="linkview-domain">{item.title || li.domain}</div>
-                  <div className="linkview-url">{item.url}</div>
+                  <div className="linkview-url">{li.domain}{li.path ? li.path.slice(0, 60) + (li.path.length > 60 ? "…" : "") : ""}</div>
                   <span className="linkview-open">Open link ↗</span>
                 </div>
               </div>
@@ -898,7 +902,6 @@ function DetailModal({ item, onClose, onDelete, onSaved }) {
                   <fk.Icon />
                 </div>
                 <div className="fileview-name">{item.title || baseName(item.file_path) || "File"}</div>
-                <div className="fileview-type">{fk.label}{fk.ext ? " · " + fk.ext.toUpperCase() : ""}</div>
                 <span className="fileview-open">Open ↗</span>
               </div>
             );
@@ -1304,6 +1307,11 @@ function shortcutDisplay(str) {
   return str.split("+").map((p) => (m[p] || (p.startsWith("Key") ? p.slice(3) : p.startsWith("Digit") ? p.slice(5) : p))).join("");
 }
 function baseName(path) { return path?.split("/").pop() || path || ""; }
+// Always display a URL as just its domain (e.g. "techcrunch.com") — never the full raw string.
+function prettyUrl(url) {
+  if (!url) return "";
+  try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return url; }
+}
 // Parse a URL into the pieces a link preview needs, with a deterministic hue
 // (from the domain) for the fallback gradient tile.
 function linkInfo(url) {

@@ -62,7 +62,11 @@ button { font-family: inherit; cursor: default; }
   padding: 6px 14px; gap: 12px;
   background: rgba(251,251,252,.72); backdrop-filter: saturate(180%) blur(12px);
   position: sticky; top: 0; z-index: 10;
+  /* Let Tauri use this as the window drag handle; buttons opt out below. */
+  -webkit-app-region: drag;
+  user-select: none;
 }
+.topbar button, .topbar input, .topbar a { -webkit-app-region: no-drag; }
 
 /* mascot, parked bottom-right */
 .brand-float {
@@ -157,17 +161,6 @@ button { font-family: inherit; cursor: default; }
 .card-foot .bell { display: inline-flex; align-items: center; gap: 3px; color: var(--accent); }
 .card-foot .bell svg { width: 12px; height: 12px; }
 
-/* ── Link preview cards ───────────────────────────── */
-.linkcard-banner {
-  height: 92px; display: flex; align-items: center; justify-content: center;
-  position: relative;
-}
-.linkcard-fav {
-  width: 50px; height: 50px; border-radius: 13px; background: #fff;
-  display: flex; align-items: center; justify-content: center; position: relative;
-  overflow: hidden; box-shadow: 0 5px 16px rgba(20,20,30,.22), 0 1px 3px rgba(20,20,30,.16);
-}
-.linkcard-letter { font-size: 23px; font-weight: 700; color: #2a2a33; }
 
 /* ── File cards (monochrome) ──────────────────────── */
 .filecard-banner {
@@ -178,12 +171,6 @@ button { font-family: inherit; cursor: default; }
 }
 .filecard-glyph { color: var(--text2); display: flex; }
 .filecard-glyph svg { width: 38px; height: 38px; stroke-width: 1.5; }
-.filecard-ext {
-  position: absolute; right: 10px; bottom: 9px;
-  font-size: 9.5px; font-weight: 700; letter-spacing: .04em;
-  color: var(--text3); background: var(--card);
-  padding: 2px 6px; border-radius: 5px; border: 1px solid var(--border);
-}
 .filecard-wave {
   position: absolute; left: 0; right: 0; bottom: 0; height: 30px; opacity: .5;
   background-repeat: repeat-x; background-position: center bottom;
@@ -212,19 +199,25 @@ button { font-family: inherit; cursor: default; }
   text-align: center; padding: 22px 0 8px; cursor: default;
 }
 .fileview-glyph {
-  width: 96px; height: 96px; border-radius: 22px; position: relative; overflow: hidden;
+  width: 120px; height: 120px; border-radius: 26px; position: relative; overflow: hidden;
   display: flex; align-items: center; justify-content: center; margin-bottom: 18px;
   background: linear-gradient(160deg, var(--bg2), var(--bg3));
   border: 1px solid var(--border); color: var(--text2);
 }
-.fileview-glyph svg { width: 44px; height: 44px; stroke-width: 1.5; }
+.fileview-glyph svg { width: 48px; height: 48px; stroke-width: 1.5; }
+.fileview-kind {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  font-size: 9.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--text3); text-align: center;
+  padding: 4px 0 5px;
+  background: rgba(255,255,255,0.72); backdrop-filter: blur(4px);
+}
 .fileview-wave {
   position: absolute; left: 0; right: 0; bottom: 0; height: 34px; opacity: .55;
   background-repeat: repeat-x; background-position: center bottom;
   background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='63' height='40'><g fill='%23a8a8b3'><rect x='1' y='15' width='3' height='10' rx='1.5'/><rect x='8' y='10' width='3' height='20' rx='1.5'/><rect x='15' y='6' width='3' height='28' rx='1.5'/><rect x='22' y='12' width='3' height='16' rx='1.5'/><rect x='29' y='17' width='3' height='6' rx='1.5'/><rect x='36' y='9' width='3' height='22' rx='1.5'/><rect x='43' y='13' width='3' height='14' rx='1.5'/><rect x='50' y='4' width='3' height='32' rx='1.5'/><rect x='57' y='11' width='3' height='18' rx='1.5'/></g></svg>");
 }
 .fileview-name { font-size: 17px; font-weight: 600; color: var(--text); word-break: break-word; max-width: 80%; line-height: 1.35; }
-.fileview-type { font-size: 12.5px; color: var(--text3); margin-top: 5px; }
 .fileview-open { display: inline-block; margin-top: 16px; font-size: 13px; font-weight: 600; color: var(--accent); }
 
 /* empty state */
