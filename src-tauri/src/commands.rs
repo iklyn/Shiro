@@ -1,22 +1,11 @@
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 use crate::db::{self, Db, SaveRequest};
 use crate::storage::{self, StorageDir};
-
-/// Shared waker: the reminder thread sleeps on this condvar. Any code that
-/// adds or removes a reminder signals it so the thread re-evaluates its sleep.
-pub type ReminderWaker = Arc<(Mutex<()>, Condvar)>;
-
-pub(crate) fn signal_reminder_thread(waker: &ReminderWaker) {
-    let (lock, cvar) = &**waker;
-    let _guard = lock.lock().unwrap();
-    cvar.notify_one();
-}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Item {
@@ -60,7 +49,6 @@ pub fn cmd_save_item(
     app: AppHandle,
     db: tauri::State<Db>,
     storage: tauri::State<StorageDir>,
-    waker: tauri::State<ReminderWaker>,
     mut req: SaveRequest,
     screenshot_path: Option<String>,
 ) -> Result<String, String> {
@@ -87,7 +75,10 @@ pub fn cmd_save_item(
                 std::fs::copy(src, &dest).map_err(|e| e.to_string())?;
                 let _ = std::fs::remove_file(src);
             }
-            let name = dest.file_name().and_then(|s| s.to_str()).unwrap_or("shot.png");
+            let name = dest
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("shot.png");
             req.image_path = Some(format!("Images/{name}"));
         }
     }
@@ -111,10 +102,6 @@ pub fn cmd_save_item(
     }
     // Tell the main window to refresh its list.
     let _ = app.emit("item-saved", &id);
-    // Wake the reminder thread so it can recalculate its next sleep duration.
-    if req.remind_at.is_some() {
-        signal_reminder_thread(&waker);
-    }
     Ok(id)
 }
 
@@ -182,7 +169,12 @@ pub fn cmd_save_files(
 
 /// Write a highlight/link as a Markdown file with YAML-ish front matter and
 /// return its path relative to the storage folder.
-fn write_markdown(dir: &Path, id: &str, req: &SaveRequest, created: &str) -> Result<String, String> {
+fn write_markdown(
+    dir: &Path,
+    id: &str,
+    req: &SaveRequest,
+    created: &str,
+) -> Result<String, String> {
     let folder = if req.item_type == "link" {
         storage::links_dir(dir)
     } else {
@@ -256,7 +248,7 @@ pub fn cmd_get_storage_dir(storage: tauri::State<StorageDir>) -> Result<String, 
         .to_string())
 }
 
-/// Relocate the storage folder: copy db + files/ + pages/ into `new_dir`,
+/// Relocate the storage folder: copy db + saved artifacts into `new_dir`,
 /// reopen the database there, and remember the choice. Old copies are removed.
 #[tauri::command]
 pub fn cmd_set_storage_dir(
@@ -284,7 +276,7 @@ pub fn cmd_set_storage_dir(
     }
 
     // Copy every typed folder + the hidden index.
-    for sub in [".shiro", "Highlights", "Links", "Pages", "Files", "Images"] {
+    for sub in [".shiro", "Highlights", "Links", "Files", "Images"] {
         storage::copy_dir(&old.join(sub), &new.join(sub)).map_err(|e| e.to_string())?;
     }
 
@@ -298,7 +290,7 @@ pub fn cmd_set_storage_dir(
     storage::write_config(&app, &new)?;
 
     // Best-effort cleanup of the old copies.
-    for sub in [".shiro", "Highlights", "Links", "Pages", "Files", "Images"] {
+    for sub in [".shiro", "Highlights", "Links", "Files", "Images"] {
         let _ = std::fs::remove_dir_all(old.join(sub));
     }
 
@@ -396,13 +388,47 @@ pub fn cmd_read_image(storage: tauri::State<StorageDir>, path: String) -> Result
         storage.lock().map_err(|e| e.to_string())?.join(p)
     };
     let bytes = std::fs::read(&full).map_err(|e| e.to_string())?;
-    let mime = match full.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).as_deref() {
+    let mime = match full
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .as_deref()
+    {
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("gif") => "image/gif",
         Some("webp") => "image/webp",
         _ => "image/png",
     };
     Ok(format!("data:{mime};base64,{}", b64(&bytes)))
+}
+
+/// Check whether macOS has granted screen-recording access.
+/// Uses CGPreflightScreenCaptureAccess() (available macOS 11+).
+#[tauri::command]
+pub fn cmd_screen_capture_status() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        #[link(name = "CoreGraphics", kind = "framework")]
+        extern "C" { fn CGPreflightScreenCaptureAccess() -> bool; }
+        unsafe { CGPreflightScreenCaptureAccess() }
+    }
+    #[cfg(not(target_os = "macos"))]
+    { true }
+}
+
+/// Prompt the user for screen-recording access.
+/// CGRequestScreenCaptureAccess() shows the system dialog and returns the
+/// (new) trust state. macOS also opens System Settings if already denied.
+#[tauri::command]
+pub fn cmd_request_screen_capture() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        #[link(name = "CoreGraphics", kind = "framework")]
+        extern "C" { fn CGRequestScreenCaptureAccess() -> bool; }
+        unsafe { CGRequestScreenCaptureAccess() }
+    }
+    #[cfg(not(target_os = "macos"))]
+    { true }
 }
 
 /// Is Shiro currently trusted for Accessibility? (Non-macOS always true.)
@@ -433,30 +459,26 @@ pub fn cmd_request_accessibility() -> bool {
 }
 
 /// Whether the user has enabled the reminders feature (stored in settings).
-/// Defaults to false — the alarm button is hidden until explicitly turned on.
+/// Generic setting read — used by the frontend for things like onboarding state.
 #[tauri::command]
-pub fn cmd_get_reminders_enabled(db: tauri::State<Db>) -> Result<bool, String> {
+pub fn cmd_get_setting(db: tauri::State<Db>, key: String) -> Result<Option<String>, String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
-    Ok(db::get_setting(&conn, "reminders_enabled")
-        .unwrap_or(None)
-        .map(|v| v == "true")
-        .unwrap_or(false))
+    db::get_setting(&conn, &key).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn cmd_set_reminders_enabled(db: tauri::State<Db>, enabled: bool) -> Result<(), String> {
+pub fn cmd_set_setting(db: tauri::State<Db>, key: String, value: String) -> Result<(), String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
-    db::set_setting(&conn, "reminders_enabled", if enabled { "true" } else { "false" })
-        .map_err(|e| e.to_string())
+    db::set_setting(&conn, &key, &value).map_err(|e| e.to_string())
 }
 
-/// Open System Settings → Notifications so the user can grant permission.
+/// Open System Settings → Privacy & Security → Screen & System Audio Recording.
 #[tauri::command]
-pub fn cmd_open_notification_settings() -> Result<(), String> {
+pub fn cmd_open_screen_recording_settings() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
-            .arg("x-apple.systempreferences:com.apple.preference.notifications")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
             .spawn()
             .map_err(|e| e.to_string())?;
     }
@@ -477,10 +499,7 @@ pub fn cmd_open_accessibility_settings() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn cmd_get_items(
-    db: tauri::State<Db>,
-    filter: Option<String>,
-) -> Result<Vec<Item>, String> {
+pub fn cmd_get_items(db: tauri::State<Db>, filter: Option<String>) -> Result<Vec<Item>, String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
 
     let (sql, type_filter) = build_list_query(&filter);
@@ -520,7 +539,11 @@ pub fn cmd_delete_item(
             continue;
         }
         let p = std::path::Path::new(&rel);
-        let full = if p.is_absolute() { p.to_path_buf() } else { dir.join(p) };
+        let full = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            dir.join(p)
+        };
         let _ = std::fs::remove_file(full);
     }
     Ok(())
@@ -639,8 +662,8 @@ pub fn cmd_show_popup(app: AppHandle, data: PopupData) -> Result<(), String> {
     if let Ok(pos) = win.cursor_position() {
         let scale = win.scale_factor().unwrap_or(1.0);
         let off_x = (200.0 * scale) as i32; // half of 400 → centered on cursor
-        // window_height(340) - bottom_pad(14) - bar_height(44) = 282
-        // bar_top = cursor_y + 10  →  window_y = cursor_y - 272
+                                            // window_height(340) - bottom_pad(14) - bar_height(44) = 282
+                                            // bar_top = cursor_y + 10  →  window_y = cursor_y - 272
         let off_y = (250.0 * scale) as i32;
         let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
             x: pos.x as i32 - off_x,
@@ -705,7 +728,9 @@ pub(crate) fn present_panel(win: &tauri::WebviewWindow) {
         fn object_setClass(obj: *mut Object, cls: *const Class) -> *const Class;
     }
 
-    let Ok(ns_window) = win.ns_window() else { return };
+    let Ok(ns_window) = win.ns_window() else {
+        return;
+    };
     let ns_window = ns_window as *mut Object;
 
     unsafe {
@@ -730,7 +755,8 @@ pub(crate) fn present_panel(win: &tauri::WebviewWindow) {
 
         // Step 1: CanJoinAllSpaces pulls this persistent window onto whatever
         // Space is active right now (including a full-screen Space).
-        let _: () = msg_send![ns_window, setCollectionBehavior: CAN_JOIN_ALL_SPACES | FULLSCREEN_AUX];
+        let _: () =
+            msg_send![ns_window, setCollectionBehavior: CAN_JOIN_ALL_SPACES | FULLSCREEN_AUX];
 
         // Show + key WITHOUT activating the app (no Space switch).
         let _: () = msg_send![ns_window, orderFrontRegardless];
@@ -835,10 +861,17 @@ pub fn rebuild_index(conn: &rusqlite::Connection, dir: &Path) {
                 .to_string_lossy()
                 .to_string();
             let req = SaveRequest {
-                item_type: fm.get("type").cloned().unwrap_or_else(|| default_type.to_string()),
+                item_type: fm
+                    .get("type")
+                    .cloned()
+                    .unwrap_or_else(|| default_type.to_string()),
                 url: fm.get("source").cloned(),
                 title: fm.get("title").cloned(),
-                text: if body.trim().is_empty() { None } else { Some(body) },
+                text: if body.trim().is_empty() {
+                    None
+                } else {
+                    Some(body)
+                },
                 html: None,
                 file_path: Some(rel),
                 notes: None,
@@ -906,7 +939,9 @@ pub fn rebuild_index(conn: &rusqlite::Connection, dir: &Path) {
 /// `---\n key: value …\n---\n body` shape we write; tolerant of missing fences.
 fn parse_front_matter(raw: &str) -> (std::collections::HashMap<String, String>, String) {
     let mut map = std::collections::HashMap::new();
-    let rest = raw.strip_prefix("---\n").or_else(|| raw.strip_prefix("---\r\n"));
+    let rest = raw
+        .strip_prefix("---\n")
+        .or_else(|| raw.strip_prefix("---\r\n"));
     let Some(rest) = rest else {
         return (map, raw.to_string());
     };
@@ -979,12 +1014,14 @@ pub fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<(), String> {
     if !mods.contains(Modifiers::SHIFT) {
         let shot = Shortcut::new(Some(mods | Modifiers::SHIFT), code);
         let h2 = app.clone();
-        let _ = app.global_shortcut().on_shortcut(shot, move |_app, _sc, event| {
-            if event.state() == ShortcutState::Pressed {
-                let h = h2.clone();
-                std::thread::spawn(move || trigger_screenshot(&h));
-            }
-        });
+        let _ = app
+            .global_shortcut()
+            .on_shortcut(shot, move |_app, _sc, event| {
+                if event.state() == ShortcutState::Pressed {
+                    let h = h2.clone();
+                    std::thread::spawn(move || trigger_screenshot(&h));
+                }
+            });
     }
     Ok(())
 }
@@ -1011,18 +1048,41 @@ fn parse_shortcut_parts(s: &str) -> Result<(Modifiers, Code), String> {
 
 fn str_to_code(s: &str) -> Option<Code> {
     Some(match s {
-        "KeyA" => Code::KeyA, "KeyB" => Code::KeyB, "KeyC" => Code::KeyC,
-        "KeyD" => Code::KeyD, "KeyE" => Code::KeyE, "KeyF" => Code::KeyF,
-        "KeyG" => Code::KeyG, "KeyH" => Code::KeyH, "KeyI" => Code::KeyI,
-        "KeyJ" => Code::KeyJ, "KeyK" => Code::KeyK, "KeyL" => Code::KeyL,
-        "KeyM" => Code::KeyM, "KeyN" => Code::KeyN, "KeyO" => Code::KeyO,
-        "KeyP" => Code::KeyP, "KeyQ" => Code::KeyQ, "KeyR" => Code::KeyR,
-        "KeyS" => Code::KeyS, "KeyT" => Code::KeyT, "KeyU" => Code::KeyU,
-        "KeyV" => Code::KeyV, "KeyW" => Code::KeyW, "KeyX" => Code::KeyX,
-        "KeyY" => Code::KeyY, "KeyZ" => Code::KeyZ,
-        "Digit0" => Code::Digit0, "Digit1" => Code::Digit1, "Digit2" => Code::Digit2,
-        "Digit3" => Code::Digit3, "Digit4" => Code::Digit4, "Digit5" => Code::Digit5,
-        "Digit6" => Code::Digit6, "Digit7" => Code::Digit7, "Digit8" => Code::Digit8,
+        "KeyA" => Code::KeyA,
+        "KeyB" => Code::KeyB,
+        "KeyC" => Code::KeyC,
+        "KeyD" => Code::KeyD,
+        "KeyE" => Code::KeyE,
+        "KeyF" => Code::KeyF,
+        "KeyG" => Code::KeyG,
+        "KeyH" => Code::KeyH,
+        "KeyI" => Code::KeyI,
+        "KeyJ" => Code::KeyJ,
+        "KeyK" => Code::KeyK,
+        "KeyL" => Code::KeyL,
+        "KeyM" => Code::KeyM,
+        "KeyN" => Code::KeyN,
+        "KeyO" => Code::KeyO,
+        "KeyP" => Code::KeyP,
+        "KeyQ" => Code::KeyQ,
+        "KeyR" => Code::KeyR,
+        "KeyS" => Code::KeyS,
+        "KeyT" => Code::KeyT,
+        "KeyU" => Code::KeyU,
+        "KeyV" => Code::KeyV,
+        "KeyW" => Code::KeyW,
+        "KeyX" => Code::KeyX,
+        "KeyY" => Code::KeyY,
+        "KeyZ" => Code::KeyZ,
+        "Digit0" => Code::Digit0,
+        "Digit1" => Code::Digit1,
+        "Digit2" => Code::Digit2,
+        "Digit3" => Code::Digit3,
+        "Digit4" => Code::Digit4,
+        "Digit5" => Code::Digit5,
+        "Digit6" => Code::Digit6,
+        "Digit7" => Code::Digit7,
+        "Digit8" => Code::Digit8,
         "Digit9" => Code::Digit9,
         "Space" => Code::Space,
         "Enter" => Code::Enter,
@@ -1040,9 +1100,18 @@ fn str_to_code(s: &str) -> Option<Code> {
         "Minus" => Code::Minus,
         "Equal" => Code::Equal,
         "Backquote" => Code::Backquote,
-        "F1" => Code::F1, "F2" => Code::F2, "F3" => Code::F3, "F4" => Code::F4,
-        "F5" => Code::F5, "F6" => Code::F6, "F7" => Code::F7, "F8" => Code::F8,
-        "F9" => Code::F9, "F10" => Code::F10, "F11" => Code::F11, "F12" => Code::F12,
+        "F1" => Code::F1,
+        "F2" => Code::F2,
+        "F3" => Code::F3,
+        "F4" => Code::F4,
+        "F5" => Code::F5,
+        "F6" => Code::F6,
+        "F7" => Code::F7,
+        "F8" => Code::F8,
+        "F9" => Code::F9,
+        "F10" => Code::F10,
+        "F11" => Code::F11,
+        "F12" => Code::F12,
         _ => return None,
     })
 }
@@ -1071,14 +1140,9 @@ pub fn trigger_screenshot(app: &AppHandle) {
 }
 
 fn capture_context() -> Result<PopupData, String> {
-    // IMPORTANT: AppleScript resolves each `tell application "X"` dictionary at
-    // COMPILE time. Referencing a browser that isn't installed makes the whole
-    // script fail to compile ("Expected end of line but found property"). So we
-    // detect the frontmost app first, then run a script that only ever talks to
-    // apps we know are present (System Events / Finder) or the one browser that
-    // is actually frontmost.
-    // Frontmost app in-process (no osascript spawn). Gives name + pid; the pid is
-    // also what we reactivate on save to return focus to where the user was.
+    // Frontmost app, in-process (no subprocess spawn). Gives name + pid; the pid
+    // is what we reactivate on save to return focus to where the user was, and
+    // `front` decides whether the address-bar URL grab applies (browsers only).
     #[cfg(target_os = "macos")]
     let (front, pid) = crate::accessibility::frontmost_app().unwrap_or_default();
     #[cfg(not(target_os = "macos"))]
@@ -1087,54 +1151,48 @@ fn capture_context() -> Result<PopupData, String> {
         PREV_APP_PID.store(pid, Ordering::Relaxed);
     }
 
-    // Finder: capture the file selection, nothing else.
-    if front == "Finder" {
-        let out = run_osascript(
-            r#"set out to ""
-            tell application "Finder" to set theSel to selection
-            repeat with anItem in theSel
-                try
-                    set out to out & POSIX path of (anItem as alias) & linefeed
-                end try
-            end repeat
-            return out"#,
-        )
-        .unwrap_or_default();
-        let files = out
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .collect::<Vec<_>>();
-        return Ok(PopupData { files, ..Default::default() });
+    // NOTE: Finder file capture by hotkey was removed on purpose — it needed a
+    // `tell application "Finder"` Apple event, which triggers a second
+    // ("Automation") permission prompt. Files are added by dragging them onto the
+    // window or via the file picker, neither of which needs any extra permission.
+
+    // Capture the selection from the CLIPBOARD first: one ⌘C grabs the plain
+    // text, the HTML flavour (rich-text formatting) AND any image in a single
+    // shot — that's what preserves formatting and copied images. The
+    // Accessibility API only ever exposes plain text (no formatting, no image),
+    // so it's a *fallback* for the rare app that blocks ⌘C but exposes
+    // AXSelectedText. (Using AX first silently dropped html + images — that was
+    // the "formatting/images don't capture" regression.)
+    let mut cap = capture_clipboard();
+    if cap.text.is_none() && cap.image_png.is_none() {
+        #[cfg(target_os = "macos")]
+        if let Some(t) = crate::accessibility::selected_text() {
+            if !t.is_empty() {
+                cap.text = Some(t);
+            }
+        }
+    }
+    let text = cap.text.filter(|s| !s.is_empty());
+    let clip_html = cap.html.filter(|s| !s.trim().is_empty());
+
+    // A pure image copy ("Copy Image") → pre-attach it like a screenshot so the
+    // pill shows it and saving drops it into Images/.
+    let (mut screenshot, mut screenshot_path) = (None, None);
+    #[cfg(target_os = "macos")]
+    if let Some(png) = cap.image_png {
+        if let Some((path, data_url)) = clipboard_image_to_temp(&png) {
+            screenshot = Some(data_url);
+            screenshot_path = Some(path);
+        }
     }
 
-    // Selected text: Accessibility API first (instant, in-process; covers native
-    // apps). If it finds nothing, fall back to the clipboard ⌘C method, which
-    // also catches selections in browsers and Electron apps (Slack/VS Code/…).
-    // The hotkey no longer auto-screenshots, so this only affects pill speed.
-    let ax_text = {
-        #[cfg(target_os = "macos")]
-        { crate::accessibility::selected_text() }
-        #[cfg(not(target_os = "macos"))]
-        { None }
-    };
-    let ax_text = ax_text.filter(|s| !s.is_empty());
-    let (text, clip_html) = if let Some(t) = ax_text {
-        (Some(t), None)
-    } else {
-        match capture_selected_text_via_clipboard() {
-            Some((t, h)) => (Some(t), h),
-            None => (None, None),
-        }
-    };
-
-    // URL via the address-bar keyboard shortcut (browsers only): the text is
-    // already captured, so it's safe to move focus. Cmd+L selects the address bar,
-    // Cmd+C copies the URL, Esc returns to the page. Uses the keystroke
-    // (Accessibility) permission — no Automation prompt — and works for both Safari
-    // and Chromium (incl. Atlas). The page title isn't available this way.
+    // URL via the address-bar keyboard shortcut (browsers only). ONLY when the
+    // user actually selected text — grabbing the URL means hijacking the address
+    // bar (Cmd+L/Cmd+C/Esc), which is disruptive and pointless on a bare hotkey
+    // press with nothing selected. With a selection, the URL is attached as the
+    // source. No selection → no URL grab, no browser disruption, clean pill.
     #[cfg(target_os = "macos")]
-    let url = browser_url_via_keyboard(&front);
+    let url = if text.is_some() { browser_url_via_keyboard(&front) } else { None };
     #[cfg(not(target_os = "macos"))]
     let url: Option<String> = None;
     let title: Option<String> = None;
@@ -1142,164 +1200,129 @@ fn capture_context() -> Result<PopupData, String> {
     Ok(PopupData {
         url: url.filter(|s| !s.is_empty()),
         title: title.filter(|s| !s.is_empty()),
-        text: text.filter(|s| !s.is_empty()),
-        html: clip_html.filter(|s| !s.is_empty()),
+        text,
+        html: clip_html,
         files: vec![],
-        ..Default::default()
+        screenshot,
+        screenshot_path,
     })
 }
 
-/// Grab the current page URL by simulating the address-bar shortcut: Cmd+L
-/// (focus + select the URL) → Cmd+C (copy) → Esc (return to page). Restores the
-/// clipboard afterward. Uses synthetic keystrokes (Accessibility permission) so
-/// there's no Automation prompt, and Cmd+L is universal across Safari/Chromium.
-///
-/// Gated to known browsers — firing Cmd+L into an arbitrary app could do anything.
+/// Browsers we'll fire the address-bar shortcut into. Gated so Cmd+L can't be
+/// sent into an arbitrary app.
+#[cfg(target_os = "macos")]
+const BROWSERS: &[&str] = &[
+    "Safari",
+    "Safari Technology Preview",
+    "Orion",
+    "Google Chrome",
+    "Google Chrome Canary",
+    "Chromium",
+    "Brave Browser",
+    "Microsoft Edge",
+    "Arc",
+    "Vivaldi",
+    "Opera",
+    "Opera GX",
+    "ChatGPT Atlas",
+    "Atlas",
+    "Dia",
+    "SigmaOS",
+    "Comet",
+];
+
+/// Grab the current page URL by simulating the address-bar shortcut (⌘L → ⌘C →
+/// Esc). Native CGEvent keystrokes — **Accessibility permission only, no
+/// Automation prompt**; ⌘L is universal across Safari/Chromium. Gated to known
+/// browsers so the shortcut can't be fired into an arbitrary app.
 #[cfg(target_os = "macos")]
 fn browser_url_via_keyboard(front: &str) -> Option<String> {
-    const BROWSERS: &[&str] = &[
-        "Safari", "Safari Technology Preview", "Orion",
-        "Google Chrome", "Google Chrome Canary", "Chromium", "Brave Browser",
-        "Microsoft Edge", "Arc", "Vivaldi", "Opera", "Opera GX",
-        "ChatGPT Atlas", "Atlas", "Dia", "SigmaOS", "Comet",
-    ];
     if !BROWSERS.contains(&front) {
         return None;
     }
-    // Cmd+L focuses + selects the address bar; clear the clipboard, Cmd+C, then
-    // POLL until it fills — the copy lands a beat after the keystroke, so a fixed
-    // delay races the focus change and copies nothing. Esc returns to the page;
-    // the original clipboard is restored.
-    let script = r#"
-        set oldClip to ""
-        try
-            set oldClip to the clipboard as text
-        end try
-        tell application "System Events" to keystroke "l" using command down
-        delay 0.12
-        set the clipboard to ""
-        tell application "System Events" to keystroke "c" using command down
-        set u to ""
-        repeat 15 times
-            delay 0.02
-            try
-                set u to the clipboard as text
-            on error
-                set u to ""
-            end try
-            if u is not "" then exit repeat
-        end repeat
-        tell application "System Events" to key code 53
-        set the clipboard to oldClip
-        return u
-    "#;
-    run_osascript(script)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| s.starts_with("http"))
+    crate::mac_input::browser_url()
 }
 
-fn run_osascript(script: &str) -> Result<String, String> {
-    let output = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        eprintln!("Shiro capture: osascript failed: {err}");
-        return Err(err);
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+/// What a clipboard capture produced. Any combination may be present; a pure
+/// image copy (e.g. "Copy Image") yields only `image_png`.
+#[derive(Default)]
+struct ClipCapture {
+    text: Option<String>,
+    html: Option<String>,
+    image_png: Option<Vec<u8>>,
 }
 
-/// Copy the current selection from the frontmost app: clear the clipboard, send
-/// Cmd+C, poll for new contents, and restore the clipboard if nothing was
-/// selected. Only talks to System Events, so it always compiles.
-/// Hybrid selection capture: ask the Accessibility API for the focused
-/// element's selected text first (clean, no clipboard). That works for native
-/// apps; browsers/Electron usually don't expose it, so we fall back to the
-/// Cmd+C method. Both use the same Accessibility permission.
+/// Capture the current selection through the clipboard, **natively**. Sends ⌘C
+/// with CGEvent (Accessibility permission only — no Automation prompt) and reads
+/// the result off NSPasteboard, polling the actual *contents* so we never read
+/// before the copy has landed (that race is what broke an earlier native
+/// attempt). Text, HTML, and image bytes are all read off the one ⌘C. The
+/// clipboard is restored only when nothing at all was captured.
+#[cfg(target_os = "macos")]
+fn capture_clipboard() -> ClipCapture {
+    use crate::mac_input as mi;
+    use std::time::Duration;
 
-fn capture_selected_text_via_clipboard() -> Option<(String, Option<String>)> {
-    // Two modes:
-    //  • Accessibility granted → clear clipboard, send Cmd+C, poll for the new
-    //    selection (accurate even if it matches what was already copied).
-    //  • Keystroke blocked (no Accessibility) → the keystroke is caught by
-    //    `try`, so instead we fall back to whatever the user copied manually.
-    //    Copy-then-hotkey works without any permission.
-    let script = r#"
-        try
-            set oldClip to the clipboard as text
-        on error
-            set oldClip to ""
-        end try
-        set selText to ""
-        set didCopy to false
-        try
-            set the clipboard to ""
-            tell application "System Events" to keystroke "c" using command down
-            set didCopy to true
-        end try
-        if didCopy then
-            -- Poll briefly (~240ms max), exiting the instant the clipboard fills.
-            -- A real selection lands within ~100ms; this keeps the no-selection
-            -- case (which precedes the screenshot) from stalling.
-            repeat 8 times
-                delay 0.02
-                try
-                    set cur to the clipboard as text
-                on error
-                    set cur to ""
-                end try
-                if cur is not "" then
-                    set selText to cur
-                    exit repeat
-                end if
-            end repeat
-            if selText is "" then
-                set the clipboard to oldClip
-            end if
-        else
-            set the clipboard to oldClip
-            set selText to oldClip
-        end if
-        return selText
-    "#;
-    let text = run_osascript(script)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())?;
+    let saved = mi::clipboard_text();
+    mi::clear_clipboard();
+    mi::send_cmd_key(mi::KEY_C);
 
-    // After the text is captured the clipboard still holds the selection. Read
-    // the HTML flavour too — browsers write both. osascript renders raw data as
-    // «data HTML3C6D...» (hex of the bytes), so decode it back to real HTML.
-    let html = run_osascript("the clipboard as «class HTML»")
-        .ok()
-        .and_then(|s| decode_applescript_html_data(&s))
-        .filter(|s| !s.trim().is_empty());
+    // Poll contents (~240ms max). A real selection lands in a frame or two; this
+    // only runs to the end when there's nothing to copy.
+    let mut text = None;
+    for _ in 0..12 {
+        std::thread::sleep(Duration::from_millis(20));
+        if let Some(s) = mi::clipboard_text() {
+            if !s.trim().is_empty() {
+                text = Some(s);
+                break;
+            }
+        }
+        if mi::clipboard_has_image() {
+            break;
+        }
+    }
 
-    Some((text, html))
+    // HTML flavour (rich-text formatting + any inline images) rides along with the
+    // text selection. This is what carries images that are part of a text capture.
+    let html = if text.is_some() {
+        mi::clipboard_html()
+    } else {
+        None
+    };
+
+    // An image our own ⌘C produced — i.e. the selection itself WAS an image
+    // (e.g. an image selected in Preview/Photos). We deliberately do NOT grab a
+    // pre-existing "Copy Image" off the clipboard: images come along with a text
+    // capture (via the HTML), not from a separate copy-then-hotkey step.
+    let image_png = mi::read_image_png();
+
+    // Nothing landed (no selection) → put back whatever we cleared.
+    if text.is_none() && image_png.is_none() {
+        if let Some(s) = saved {
+            mi::set_clipboard_text(&s);
+        }
+    }
+
+    ClipCapture {
+        text: text.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+        html: html.filter(|s| !s.trim().is_empty()),
+        image_png,
+    }
 }
 
-/// osascript prints raw clipboard data as `«data HTML3C6D...»` where the trailing
-/// hex is the UTF-8 HTML bytes. Strip the wrapper and hex-decode back to a string.
-fn decode_applescript_html_data(raw: &str) -> Option<String> {
-    let s = raw.trim();
-    // If it's already plain HTML (rare), use it as-is.
-    if !s.starts_with('«') {
-        return if s.is_empty() { None } else { Some(s.to_string()) };
-    }
-    let inner = s.strip_prefix('«')?.strip_suffix('»')?; // data HTML3C6D...
-    let hex = inner.strip_prefix("data ").unwrap_or(inner);
-    // Drop the 4-char type code ("HTML", "utxt", etc.) that precedes the hex.
-    let hex = hex.get(4..).unwrap_or("");
-    if hex.len() < 2 || hex.len() % 2 != 0 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    let bytes: Option<Vec<u8>> = (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
-        .collect();
-    Some(String::from_utf8_lossy(&bytes?).into_owned())
+#[cfg(not(target_os = "macos"))]
+fn capture_clipboard() -> ClipCapture {
+    ClipCapture::default()
+}
+
+/// Write clipboard PNG bytes to a temp file; returns (path, data-url preview).
+#[cfg(target_os = "macos")]
+fn clipboard_image_to_temp(png: &[u8]) -> Option<(String, String)> {
+    let tmp = std::env::temp_dir().join(format!("shiro-clip-{}.png", uuid::Uuid::new_v4()));
+    std::fs::write(&tmp, png).ok()?;
+    Some((
+        tmp.to_string_lossy().to_string(),
+        format!("data:image/png;base64,{}", b64(png)),
+    ))
 }

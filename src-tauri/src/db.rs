@@ -1,4 +1,4 @@
-use rusqlite::{Connection, Result, params};
+use rusqlite::{params, Connection, Result};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -47,17 +47,6 @@ fn migrate(conn: &Connection) -> Result<()> {
                 notes      TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS tags (
-                id   TEXT PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE
-            );
-
-            CREATE TABLE IF NOT EXISTS item_tags (
-                item_id TEXT REFERENCES items(id) ON DELETE CASCADE,
-                tag_id  TEXT REFERENCES tags(id) ON DELETE CASCADE,
-                PRIMARY KEY (item_id, tag_id)
             );
 
             CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
@@ -143,7 +132,12 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
 /// (`file_path`) and timestamp are decided by the caller (which also wrote the
 /// .md / file to the typed folder). Used both for live saves and for rebuilding
 /// the index from the folders. `INSERT OR IGNORE` so a rebuild won't duplicate.
-pub fn insert_item(conn: &Connection, id: &str, item: &SaveRequest, created_at: &str) -> Result<()> {
+pub fn insert_item(
+    conn: &Connection,
+    id: &str,
+    item: &SaveRequest,
+    created_at: &str,
+) -> Result<()> {
     conn.execute(
         "INSERT OR IGNORE INTO items (id, type, url, title, text, html, file_path, notes, image_path, remind_at, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",

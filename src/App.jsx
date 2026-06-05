@@ -9,6 +9,7 @@ import shiroLogo from "./assets/shiro.png";
 import "./App.css";
 
 const isPopup = new URLSearchParams(window.location.search).get("window") === "popup";
+const isTauriRuntime = () => Boolean(window.__TAURI_INTERNALS__);
 // Only the popup window is transparent (for its rounded card). The main window
 // stays opaque so maximize/resize doesn't flash a black backing.
 if (isPopup) document.documentElement.classList.add("popup");
@@ -28,7 +29,6 @@ const IconClose = (p) => (<svg {...S(p)}><path d="M18 6 6 18M6 6l12 12" /></svg>
 const IconChevRR  = (p) => (<svg {...S(p)}><path d="m6 17 5-5-5-5"/><path d="m13 17 5-5-5-5"/></svg>);
 const IconChevLL  = (p) => (<svg {...S(p)}><path d="m18 17-5-5 5-5"/><path d="m11 17-5-5 5-5"/></svg>);
 const IconBack = (p) => (<svg {...S(p)}><path d="m15 18-6-6 6-6" /></svg>);
-const IconExternal = (p) => (<svg {...S(p)}><path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></svg>);
 const IconTrash = (p) => (<svg {...S(p)}><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /></svg>);
 const IconHighlight = (p) => (<svg {...S(p)}><path d="M12 20h9M2 20h2l10-10-2-2L2 18v2Z" /><path d="m12.5 6.5 3 3" /></svg>);
 const IconLink = (p) => (<svg {...S(p)}><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1" /><path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1" /></svg>);
@@ -41,6 +41,7 @@ const IconSheet = (p) => (<svg {...S(p)}><rect x="3" y="3" width="18" height="18
 const IconSlides = (p) => (<svg {...S(p)}><rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" /></svg>);
 const IconArchive = (p) => (<svg {...S(p)}><rect x="2" y="4" width="20" height="5" rx="1" /><path d="M4 9v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9" /><path d="M10 13h4" /></svg>);
 const IconCode = (p) => (<svg {...S(p)}><path d="m16 18 6-6-6-6M8 6l-6 6 6 6" /></svg>);
+const IconCheck = (p) => (<svg {...S(p)}><path d="M20 6 9 17l-5-5" /></svg>);
 
 const FILE_KINDS = {
   audio:   { label: "Audio",        Icon: IconMusic,  exts: ["mp3","wav","m4a","aac","flac","ogg","oga","opus","aiff","aif","alac","wma"] },
@@ -59,17 +60,11 @@ function fileKind(path) {
 }
 
 const KIND = {
-  highlight: { label: "Highlight", Icon: IconHighlight, cls: "k-highlight" },
-  link: { label: "Link", Icon: IconLink, cls: "k-link" },
-  image: { label: "Image", Icon: IconImage, cls: "k-image" },
-  file: { label: "File", Icon: IconFile, cls: "k-file" },
+  highlight: { label: "Highlight" },
+  link: { label: "Link" },
+  image: { label: "Image" },
+  file: { label: "File" },
 };
-function kindOf(item) {
-  if (item.type === "image" || (item.image_path && item.type !== "file")) {
-    return item.type === "highlight" ? KIND.highlight : KIND.image;
-  }
-  return KIND[item.type] || KIND.file;
-}
 
 /* ── Main library ──────────────────────────────────────────────────────────── */
 function MainApp() {
@@ -80,10 +75,19 @@ function MainApp() {
   const [selectedId, setSelectedId] = useState(null);
   const [view, setView] = useState("library");
   const [dropping, setDropping] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(() => localStorage.getItem("shiro:onboarding-complete") !== "true");
+  const [hotkey, setHotkey] = useState("Meta+KeyE");
+  const [axTrusted, setAxTrusted] = useState(false);
+  const [screenTrusted, setScreenTrusted] = useState(false);
+  const [storageDir, setStorageDir] = useState("");
   const searchRef = useRef(null);
   const searching = search.trim().length > 0;
 
   const load = useCallback(async () => {
+    if (!isTauriRuntime()) {
+      setItems([]);
+      return;
+    }
     try {
       setItems(await invoke("cmd_get_items", { filter: null }));
     } catch (e) {
@@ -92,6 +96,10 @@ function MainApp() {
   }, []);
 
   const runSearch = useCallback(async (q) => {
+    if (!isTauriRuntime()) {
+      setItems([]);
+      return;
+    }
     try {
       setItems(await invoke("cmd_search", { query: q }));
     } catch (e) {
@@ -106,7 +114,32 @@ function MainApp() {
     else load();
   }, [search, runSearch, load]);
 
+  const checkAx = useCallback(() => {
+    if (!isTauriRuntime()) { setAxTrusted(false); return; }
+    invoke("cmd_accessibility_status").then(setAxTrusted).catch(console.error);
+  }, []);
+
+  const checkScreen = useCallback(() => {
+    if (!isTauriRuntime()) { setScreenTrusted(false); return; }
+    invoke("cmd_screen_capture_status").then(setScreenTrusted).catch(console.error);
+  }, []);
+
   useEffect(() => {
+    if (!isTauriRuntime()) { checkAx(); checkScreen(); return; }
+    invoke("cmd_get_hotkey").then(setHotkey).catch(console.error);
+    invoke("cmd_get_storage_dir").then(setStorageDir).catch(console.error);
+    checkAx();
+    checkScreen();
+  }, [checkAx, checkScreen]);
+
+  useEffect(() => {
+    if (!showOnboarding) return;
+    const id = setInterval(() => { checkAx(); checkScreen(); }, 1500);
+    return () => clearInterval(id);
+  }, [showOnboarding, checkAx, checkScreen]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
     const uns = [];
     listen("item-saved", refresh).then((u) => uns.push(u));
     listen("storage-changed", () => { setSearch(""); setFilter("all"); load(); }).then((u) => uns.push(u));
@@ -115,6 +148,7 @@ function MainApp() {
 
   // Drag & drop files anywhere on the window.
   useEffect(() => {
+    if (!isTauriRuntime()) return;
     let un;
     let disposed = false;
     getCurrentWebview().onDragDropEvent((e) => {
@@ -142,6 +176,47 @@ function MainApp() {
     setSearchOpen(next);
     if (next) setTimeout(() => searchRef.current?.focus(), 60);
     else onSearchChange("");
+  };
+
+  const pickFiles = useCallback(async () => {
+    if (!isTauriRuntime()) return;
+    const picked = await openDialog({ multiple: true, title: "Choose files to save in Shiro" });
+    const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
+    if (!paths.length) return;
+    try {
+      await invoke("cmd_save_files", { paths, notes: null });
+      refresh();
+    } catch (e) {
+      console.error(e);
+    }
+  }, [refresh]);
+
+  const requestAccessibility = useCallback(async () => {
+    if (!isTauriRuntime()) return;
+    try {
+      // Shows the "Shiro wants Accessibility" system dialog.
+      // The dialog itself has an "Open System Settings" button — no need to open settings separately.
+      await invoke("cmd_request_accessibility");
+      checkAx();
+    } catch (e) {
+      console.error(e);
+    }
+  }, [checkAx]);
+
+  const requestScreenCapture = useCallback(async () => {
+    if (!isTauriRuntime()) return;
+    try {
+      // CGRequestScreenCaptureAccess shows the system prompt / adds app to the list.
+      await invoke("cmd_request_screen_capture");
+      checkScreen();
+      // Open System Settings → Screen Recording so the user can flip the toggle.
+      invoke("cmd_open_screen_recording_settings").catch(console.error);
+    } catch (e) { console.error(e); }
+  }, [checkScreen]);
+
+  const finishOnboarding = () => {
+    localStorage.setItem("shiro:onboarding-complete", "true");
+    setShowOnboarding(false);
   };
 
   const visible = filter === "all"
@@ -186,7 +261,7 @@ function MainApp() {
         </div>
       </header>
 
-      <img className="brand-float" src={shiroLogo} alt="Shiro" />
+      <BrandDock onPickFiles={pickFiles} active={dropping} />
 
       {searching && (
         <div className="filters">
@@ -203,7 +278,7 @@ function MainApp() {
           <div className="empty">
             <img src={shiroLogo} alt="" />
             <h3>{searching ? "Nothing matches" : "Nothing saved yet"}</h3>
-            <p>{searching ? "Try a different search." : "Press your shortcut to capture text or a screenshot, or drop files anywhere."}</p>
+            <p>{searching ? "Try a different search." : `Select text anywhere and press ${shortcutDisplay(hotkey)}, or drop files anywhere in Shiro.`}</p>
           </div>
         ) : (
           <MasonryGrid
@@ -247,7 +322,154 @@ function MainApp() {
         </motion.div>
       )}
     </AnimatePresence>
+    <AnimatePresence>
+      {showOnboarding && view !== "settings" && (
+        <Onboarding
+          key="onboarding"
+          hotkey={hotkey}
+          axTrusted={axTrusted}
+          screenTrusted={screenTrusted}
+          storageDir={storageDir}
+          onEnableAx={requestAccessibility}
+          onEnableScreen={requestScreenCapture}
+          onPickFiles={pickFiles}
+          onDone={finishOnboarding}
+        />
+      )}
+    </AnimatePresence>
     </>
+  );
+}
+
+function BrandDock({ onPickFiles, active }) {
+  return (
+    <motion.button
+      type="button"
+      className={`brand-dock${active ? " is-active" : ""}`}
+      onClick={onPickFiles}
+      aria-label="Add files to Shiro"
+      initial={{ opacity: 0, scale: 0.92 }}
+      animate={{ opacity: 1, scale: active ? 1.05 : 1 }}
+      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+    >
+      <img src={shiroLogo} alt="" />
+      <span className="brand-dock-tip">Upload files</span>
+    </motion.button>
+  );
+}
+
+function Onboarding({ hotkey, axTrusted, screenTrusted, storageDir,
+                       onEnableAx, onEnableScreen, onPickFiles, onDone }) {
+  const shortPath = storageDir?.replace(/^\/Users\/[^/]+/, "~") ?? "~/Desktop/Shiro";
+
+  const [axBusy, setAxBusy]             = useState(false);
+  const [axPrompted, setAxPrompted]     = useState(false);
+  const [scrBusy, setScrBusy]           = useState(false);
+  const [scrPrompted, setScrPrompted]   = useState(false);
+
+  useEffect(() => { if (axTrusted)     setAxPrompted(false);  }, [axTrusted]);
+  useEffect(() => { if (screenTrusted) setScrPrompted(false); }, [screenTrusted]);
+
+  const handleEnableAx = async () => {
+    setAxBusy(true);
+    await onEnableAx();
+    setAxBusy(false);
+    setAxPrompted(true);
+  };
+
+  const handleEnableScreen = async () => {
+    setScrBusy(true);
+    await onEnableScreen();
+    setScrBusy(false);
+    setScrPrompted(true);
+  };
+
+  return (
+    <motion.div
+      className="onboarding-scrim"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+    >
+      <motion.section
+        className="onboarding"
+        initial={{ opacity: 0, y: 14, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 8, scale: 0.98 }}
+        transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+      >
+        <div className="onboarding-hero">
+          <div className="onboarding-mark">
+            <img src={shiroLogo} alt="" />
+          </div>
+          <h1>Welcome to Shiro</h1>
+          <p>Press <kbd>{shortcutDisplay(hotkey)}</kbd> to save anything, anywhere.</p>
+        </div>
+
+        <div className="permission-list">
+
+          {/* Accessibility — required */}
+          <div className={`permission-card${axTrusted ? " ready" : ""}`}>
+            <div className="permission-icon"><IconHighlight /></div>
+            <div className="permission-copy">
+              <div className="permission-title">Read selected text</div>
+              {!axTrusted && axPrompted && (
+                <div className="permission-hint">
+                  In System Settings → Privacy &amp; Security → Accessibility, switch <strong>Shiro</strong> on.
+                </div>
+              )}
+            </div>
+            <div className="permission-action">
+              {axTrusted
+                ? <span className="permission-check"><IconCheck /></span>
+                : <button className="btn btn-primary" onClick={handleEnableAx} disabled={axBusy}>
+                    {axBusy ? "Asking…" : "Allow"}
+                  </button>}
+            </div>
+          </div>
+
+          {/* Screen Recording — required */}
+          <div className={`permission-card${screenTrusted ? " ready" : ""}`}>
+            <div className="permission-icon"><IconCamera /></div>
+            <div className="permission-copy">
+              <div className="permission-title">Screenshots</div>
+              {!screenTrusted && scrPrompted && (
+                <div className="permission-hint">
+                  In System Settings → Privacy &amp; Security → Screen &amp; System Audio Recording, switch <strong>Shiro</strong> on.
+                </div>
+              )}
+            </div>
+            <div className="permission-action">
+              {screenTrusted
+                ? <span className="permission-check"><IconCheck /></span>
+                : <button className="btn btn-primary" onClick={handleEnableScreen} disabled={scrBusy}>
+                    {scrBusy ? "Asking…" : "Allow"}
+                  </button>}
+            </div>
+          </div>
+
+          {/* Save location */}
+          <div className="permission-card ready">
+            <div className="permission-icon"><IconFile /></div>
+            <div className="permission-copy">
+              <div className="permission-title">Save location</div>
+              <div className="permission-sub">{shortPath}</div>
+            </div>
+            <div className="permission-action">
+              <button className="btn btn-ghost" onClick={onPickFiles}>Change</button>
+            </div>
+          </div>
+
+        </div>
+
+        <div className="onboarding-actions">
+          <button className="btn btn-primary" onClick={onDone}>
+            {axTrusted && screenTrusted ? "Get started" : "Set up later"}
+          </button>
+        </div>
+      </motion.section>
+    </motion.div>
   );
 }
 
@@ -298,8 +520,28 @@ function MasonryGrid({ items, renderCard }) {
   );
 }
 
+// Flatten markdown to readable plain text for card previews — strips the
+// formatting symbols (**, `, #, >, -, links) while keeping the words.
+function stripMarkdown(s) {
+  if (!s) return "";
+  return s
+    .replace(/```[\s\S]*?```/g, (m) => m.replace(/```/g, "").trim()) // code fences
+    .replace(/`([^`]+)`/g, "$1")               // inline code
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")        // images
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")     // links → label
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "")          // headings
+    .replace(/^\s{0,3}>\s?/gm, "")               // blockquotes
+    .replace(/^\s*[-*+]\s+/gm, "")               // bullet lists
+    .replace(/^\s*\d+\.\s+/gm, "")               // ordered lists
+    .replace(/(\*\*|__)(.*?)\1/g, "$2")          // bold
+    .replace(/(\*|_)(.*?)\1/g, "$2")             // italic
+    .replace(/~~(.*?)~~/g, "$2")                 // strikethrough
+    .replace(/^\s*([-*_]\s?){3,}\s*$/gm, "")     // horizontal rules
+    .replace(/\n{3,}/g, "\n\n")                  // collapse blank runs
+    .trim();
+}
+
 function Card({ item, index, onClick }) {
-  const { label, Icon, cls } = kindOf(item);
   const [thumb, setThumb] = useState(null);
   useEffect(() => {
     let alive = true;
@@ -323,7 +565,6 @@ function Card({ item, index, onClick }) {
 
   const foot = (
     <div className="card-foot">
-      {item.remind_at && <span className="bell"><IconAlarm /> {new Date(item.remind_at).toLocaleDateString()}</span>}
       <span style={{ marginLeft: "auto" }}>{relativeTime(item.created_at)}</span>
     </div>
   );
@@ -350,7 +591,6 @@ function Card({ item, index, onClick }) {
           <div className="card-title">{item.title || baseName(item.file_path) || "File"}</div>
           <div className="card-foot">
             <span style={{ color: "var(--text3)", fontSize: 12 }}>{fk.label}</span>
-            {item.remind_at && <span className="bell"><IconAlarm /> {new Date(item.remind_at).toLocaleDateString()}</span>}
             <span style={{ marginLeft: "auto" }}>{relativeTime(item.created_at)}</span>
           </div>
         </div>
@@ -359,14 +599,23 @@ function Card({ item, index, onClick }) {
   } else if (thumb) {
     body = <img className="card-thumb" src={thumb} alt="" />;
   } else {
+    // Text/highlight card. Render plain text (no markdown symbols). The quote
+    // block isn't line-clamped to a fixed 2 lines, so longer notes make taller
+    // cards and the masonry grid varies heights naturally.
+    const plainTitle   = stripMarkdown(item.title);
+    const plainSnippet = textIsUrl ? displaySnippet : stripMarkdown(displaySnippet);
     body = (
       <div className="card-body">
-        <div className="card-title">{item.title || displaySnippet || "Untitled"}</div>
-        {item.title && displaySnippet && <div className="card-snippet">{displaySnippet}</div>}
-        <div className="card-foot">
-          {item.remind_at && <span className="bell"><IconAlarm /> {new Date(item.remind_at).toLocaleDateString()}</span>}
-          <span style={{ marginLeft: "auto" }}>{relativeTime(item.created_at)}</span>
-        </div>
+        {plainTitle ? (
+          <>
+            <div className="card-title">{plainTitle}</div>
+            {plainSnippet && plainSnippet !== plainTitle &&
+              <div className="card-quote">{plainSnippet}</div>}
+          </>
+        ) : (
+          <div className="card-quote lead">{plainSnippet || "Untitled"}</div>
+        )}
+        {foot}
       </div>
     );
   }
@@ -518,28 +767,6 @@ function StickyNote({ card, index, onTextChange, onDelete, peekMode, href }) {
   );
 }
 
-function NoteStack({ cards, onPop }) {
-  const preview = cards.slice(0, 3);
-  return (
-    <motion.div
-      className="note-stack"
-      // Use margin for offset so Framer Motion's transform doesn't conflict with CSS transform
-      style={{ position: "absolute", left: "50%", top: "50%", marginLeft: -40, marginTop: 230 }}
-      initial={{ opacity: 0, scale: 0.85 }} animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.85 }}
-      transition={{ type: "spring", stiffness: 320, damping: 28 }}
-      onClick={(e) => { e.stopPropagation(); onPop(); }}
-      title={`${cards.length} more note${cards.length > 1 ? "s" : ""} — click to bring forward`}
-    >
-      {preview.map((_, i) => (
-        <div key={i} className="note-stack-card"
-          style={{ transform: `rotate(${(i - 1) * 7}deg) translateY(${(2 - i) * 3}px)`, zIndex: 3 - i }} />
-      ))}
-      <span className="note-stack-count">+{cards.length}</span>
-    </motion.div>
-  );
-}
-
 // Convert a rich clipboard HTML fragment into clean Markdown — headings, lists,
 // bold/italic, links, blockquotes, code. Stored as the item's text so both the
 // on-disk .md file and the in-app renderMarkdown view look tidy.
@@ -548,6 +775,22 @@ function htmlToMarkdown(html) {
   doc.querySelectorAll("script, style, noscript, head, meta, link").forEach(el => el.remove());
 
   const inline = (node) => Array.from(node.childNodes).map(walk).join("");
+
+  // Many sites format with CSS instead of semantic tags (e.g.
+  // <span style="font-weight:600">). Promote those to **bold** / *italic* so the
+  // formatting survives the trip to Markdown.
+  const styled = (node, text) => {
+    const t = text.trim();
+    if (!t) return text;
+    const st = (node.getAttribute && node.getAttribute("style") || "").toLowerCase();
+    const fw = st.match(/font-weight:\s*(bold|bolder|[1-9]00)/);
+    const bold = !!fw && fw[1] !== "100" && fw[1] !== "200" && fw[1] !== "300";
+    const italic = /font-style:\s*italic/.test(st);
+    let out = t;
+    if (italic) out = `*${out}*`;
+    if (bold) out = `**${out}**`;
+    return out === t ? text : out;
+  };
 
   const walk = (node) => {
     if (node.nodeType === Node.TEXT_NODE) return node.textContent.replace(/\s+/g, " ");
@@ -564,11 +807,17 @@ function htmlToMarkdown(html) {
       case "pre": return `\n\`\`\`\n${node.textContent.trim()}\n\`\`\`\n\n`;
       case "br": return "\n";
       case "img": {
-        // Only keep absolute http(s) images (relative/data URLs won't render).
         const src = node.getAttribute("src") || "";
         const alt = (node.getAttribute("alt") || "").trim();
-        return /^https?:\/\//i.test(src) ? `\n\n![${alt}](${src})\n\n` : "";
+        // Self-contained data: images embed and render fully offline. Web-hosted
+        // images can't be saved without internet (Shiro never touches the network),
+        // so keep them ONLY as a clickable reference — never an auto-loading <img>,
+        // which would itself be a silent network request.
+        if (/^data:image\//i.test(src)) return `\n\n![${alt}](${src})\n\n`;
+        if (/^https?:/i.test(src)) return ` [${alt || "image"} ↗](${src}) `;
+        return "";
       }
+      case "s": case "del": case "strike": { const t = inline(node).trim(); return t ? `~~${t}~~` : ""; }
       case "figure": return inline(node);
       case "figcaption": { const t = inline(node).trim(); return t ? `\n*${t}*\n\n` : ""; }
       case "a": {
@@ -584,10 +833,12 @@ function htmlToMarkdown(html) {
           `${ordered ? `${i + 1}.` : "-"} ${inline(li).trim()}`).join("\n") + "\n\n";
       }
       case "p": case "div": case "section": case "article": {
-        const t = inline(node).trim();
+        const t = styled(node, inline(node)).trim();
         return t ? `${t}\n\n` : "";
       }
-      default: return inline(node);
+      // span / font / mark / u and anything else: keep the text, and promote any
+      // CSS bold/italic styling to Markdown.
+      default: return styled(node, inline(node));
     }
   };
 
@@ -614,16 +865,20 @@ function sanitizeHtml(html) {
 function parseInline(text) {
   const parts = [];
   // image ![alt](src) | link [text](url) | **bold** | *italic* | `code`
-  const re = /(!\[([^\]]*)\]\(([^)]+)\)|\[([^\]]+)\]\(([^)]+)\)|\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`)/g;
+  const re = /(!\[([^\]]*)\]\(([^)]+)\)|\[([^\]]+)\]\(([^)]+)\)|\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`|~~(.+?)~~)/g;
   let last = 0, m;
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) parts.push(text.slice(last, m.index));
-    if (m[3] !== undefined) parts.push(<img key={m.index} className="content-inline-img" src={m[3]} alt={m[2]} loading="lazy" />);
+    if (m[3] !== undefined) parts.push(
+      /^data:image\//i.test(m[3])
+        ? <img key={m.index} className="content-inline-img" src={m[3]} alt={m[2]} loading="lazy" />
+        : <a key={m.index} onClick={(e) => { e.stopPropagation(); openUrl(m[3]); }}>{m[2] || "image"} ↗</a>);
     else if (m[4] !== undefined) parts.push(
       <a key={m.index} onClick={(e) => { e.stopPropagation(); openUrl(m[5]); }}>{m[4]}</a>);
     else if (m[6] !== undefined) parts.push(<strong key={m.index}>{m[6]}</strong>);
     else if (m[7] !== undefined) parts.push(<em key={m.index}>{m[7]}</em>);
     else if (m[8] !== undefined) parts.push(<code key={m.index}>{m[8]}</code>);
+    else if (m[9] !== undefined) parts.push(<del key={m.index}>{m[9]}</del>);
     last = m.index + m[0].length;
   }
   if (last < text.length) parts.push(text.slice(last));
@@ -641,7 +896,9 @@ function renderMarkdown(text) {
     // Standalone image
     if (lines.length === 1) {
       const im = lines[0].match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
-      if (im) return <img key={i} className="content-md-img" src={im[2]} alt={im[1]} loading="lazy" />;
+      if (im) return /^data:image\//i.test(im[2])
+        ? <img key={i} className="content-md-img" src={im[2]} alt={im[1]} loading="lazy" />
+        : <p key={i} className="md-p"><a onClick={(e) => { e.stopPropagation(); openUrl(im[2]); }}>{im[1] || "image"} ↗</a></p>;
     }
     // Heading (single line)
     if (lines.length === 1) {
@@ -896,13 +1153,13 @@ function DetailModal({ item, onClose, onDelete, onSaved }) {
           })() : isFileItem ? (() => {
             const fk = fileKind(item.file_path || item.title);
             return (
-              <div className="fileview" onClick={() => invoke("cmd_open_path", { path: item.file_path })}>
+              <div className="fileview" onClick={() => invoke("cmd_reveal_in_finder", { path: item.file_path })}>
                 <div className="fileview-glyph">
                   {fk.cat === "audio" && <span className="fileview-wave" aria-hidden />}
                   <fk.Icon />
                 </div>
                 <div className="fileview-name">{item.title || baseName(item.file_path) || "File"}</div>
-                <span className="fileview-open">Open ↗</span>
+                <span className="fileview-open">Show in Finder ↗</span>
               </div>
             );
           })() : (
@@ -917,13 +1174,11 @@ function DetailModal({ item, onClose, onDelete, onSaved }) {
           )}
         </div>
         {detailsStrip(<>
-          {item.remind_at && <span style={{ flexShrink: 0 }}>· Reminder {new Date(item.remind_at).toLocaleString()}</span>}
           {item.url && item.type !== "file" && (
             // "Source" link — full URL in the tooltip, click opens the exact URL.
             <span className="imgview-finder" title={item.url} style={{ flexShrink: 0 }}
               onClick={() => openUrl(item.url)}>Source</span>
           )}
-          {item.file_path && <span className="imgview-finder" style={{ flexShrink: 0 }} onClick={() => invoke("cmd_open_path", { path: item.file_path })}>Open</span>}
           {item.file_path && <span className="imgview-finder" style={{ flexShrink: 0 }} onClick={() => invoke("cmd_reveal_in_finder", { path: item.file_path })}>Show in Finder</span>}
         </>)}
       </motion.div>
@@ -939,16 +1194,22 @@ function Settings({ onBack }) {
   const [storageDir, setStorageDir] = useState("");
   const [moving, setMoving] = useState(false);
   const [axTrusted, setAxTrusted] = useState(true);
-  const [remindersOn, setRemindersOn] = useState(false);
+  const [screenTrusted, setScreenTrusted] = useState(true);
 
   useEffect(() => {
+    if (!isTauriRuntime()) return;
     invoke("cmd_get_hotkey").then(setHotkey).catch(console.error);
     invoke("cmd_get_storage_dir").then(setStorageDir).catch(console.error);
-    invoke("cmd_get_reminders_enabled").then(setRemindersOn).catch(console.error);
   }, []);
 
-  const checkAx = useCallback(() => { invoke("cmd_accessibility_status").then(setAxTrusted).catch(console.error); }, []);
-  useEffect(() => { checkAx(); const id = setInterval(checkAx, 2000); return () => clearInterval(id); }, [checkAx]);
+  // Live status of the permissions — polled so toggling them in System
+  // Settings reflects in the app within ~2s without a manual refresh.
+  const refreshPerms = useCallback(() => {
+    if (!isTauriRuntime()) { setAxTrusted(false); setScreenTrusted(false); return; }
+    invoke("cmd_accessibility_status").then(setAxTrusted).catch(console.error);
+    invoke("cmd_screen_capture_status").then(setScreenTrusted).catch(console.error);
+  }, []);
+  useEffect(() => { refreshPerms(); const id = setInterval(refreshPerms, 2000); return () => clearInterval(id); }, [refreshPerms]);
 
   const handleKeyDown = (e) => {
     if (!listening) return;
@@ -963,12 +1224,18 @@ function Settings({ onBack }) {
     const combo = parts.join("+");
     setHotkey(combo);
     setListening(false);
+    if (!isTauriRuntime()) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1600);
+      return;
+    }
     // Auto-save the moment a new combo is recorded — no Save button needed.
     invoke("cmd_set_hotkey", { hotkey: combo })
       .then(() => { setSaved(true); setTimeout(() => setSaved(false), 1600); })
       .catch(console.error);
   };
   const changeLocation = async () => {
+    if (!isTauriRuntime()) return;
     const picked = await openDialog({ directory: true, multiple: false, title: "Choose where Shiro stores everything" });
     if (!picked || picked === storageDir) return;
     setMoving(true);
@@ -976,15 +1243,19 @@ function Settings({ onBack }) {
     catch (e) { console.error(e); }
     setMoving(false);
   };
-  const enableAx = async () => { await invoke("cmd_request_accessibility"); setTimeout(checkAx, 500); };
+  const enableAx = async () => {
+    if (!isTauriRuntime()) return;
+    // Shows the system dialog; the dialog's "Open System Settings" button leads the user there.
+    await invoke("cmd_request_accessibility");
+    setTimeout(refreshPerms, 500);
+    invoke("cmd_open_accessibility_settings").catch(console.error);
+  };
 
-  const toggleReminders = async () => {
-    const next = !remindersOn;
-    try {
-      await invoke("cmd_set_reminders_enabled", { enabled: next });
-      setRemindersOn(next);
-      if (next) invoke("cmd_open_notification_settings").catch(console.error);
-    } catch (e) { console.error(e); }
+  const enableScreen = async () => {
+    if (!isTauriRuntime()) return;
+    await invoke("cmd_request_screen_capture");
+    setTimeout(refreshPerms, 500);
+    invoke("cmd_open_screen_recording_settings").catch(console.error);
   };
 
   return (
@@ -1023,38 +1294,31 @@ function Settings({ onBack }) {
             {moving ? "Moving…" : "Change…"}
           </button>
         </div>
-        <div className="hint">Changing the loaction will move older files as well.</div>
-
-        <div className="sec-label">Reminders</div>
-        <div className="row">
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="row-label">Reminders</div>
-            <div className="row-sub">Show a notification when a saved item is due.</div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span className={remindersOn ? "status-ok" : "status-no"}>{remindersOn ? "✓ On" : "Off"}</span>
-            <button className={`btn ${remindersOn ? "btn-ghost" : "btn-primary"}`} onClick={toggleReminders}>
-              {remindersOn ? "Turn off" : "Turn on"}
-            </button>
-          </div>
-        </div>
-        <div className="hint">
-          Also allow Shiro in <span className="linklike" onClick={() => invoke("cmd_open_notification_settings")}>System Settings → Notifications</span>.
-        </div>
+        <div className="hint">Changing the location will move older files as well.</div>
 
         <div className="sec-label">Permissions</div>
         <div className="row">
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="row-label">Screen access</div>
-            <div className="row-sub">Lets Shiro read selected text and take screenshots.</div>
+            <div className="row-label">Text capture</div>
+            <div className="row-sub">Reads the text you select so the shortcut can save it.</div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span className={axTrusted ? "status-ok" : "status-no"}>{axTrusted ? "✓ Granted" : "Not granted"}</span>
             {!axTrusted && <button className="btn btn-primary" onClick={enableAx}>Enable…</button>}
           </div>
         </div>
+        <div className="row">
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="row-label">Screenshots</div>
+            <div className="row-sub">Lets Shiro capture a region of the screen.</div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span className={screenTrusted ? "status-ok" : "status-no"}>{screenTrusted ? "✓ Granted" : "Not granted"}</span>
+            {!screenTrusted && <button className="btn btn-primary" onClick={enableScreen}>Enable…</button>}
+          </div>
+        </div>
         <div className="hint">
-          Switch <strong>Shiro</strong> on in <span className="linklike" onClick={() => invoke("cmd_open_accessibility_settings")}>System Settings</span>.
+          Grant these under <span className="linklike" onClick={() => isTauriRuntime() && invoke("cmd_open_accessibility_settings")}>System Settings → Privacy &amp; Security</span>.
         </div>
       </div>
     </div>
@@ -1068,10 +1332,7 @@ function CapturePill() {
   const [saving, setSaving] = useState(false);
   const [shown, setShown] = useState(false);
   const [shot, setShot] = useState(null);
-  const [remindOpen, setRemindOpen] = useState(false);
-  const [remindAt, setRemindAt] = useState("");
   const [noteOpen, setNoteOpen] = useState(false);
-  const [remindersEnabled, setRemindersEnabled] = useState(false);
   const noteRef = useRef(null);
   const wrapRef = useRef(null);
   const barRef = useRef(null);
@@ -1082,21 +1343,24 @@ function CapturePill() {
   const reset = () => {
     shownRef.current = false; setShown(false);
     setData({ url: null, title: null, text: null, files: [] });
-    setNote(""); setShot(null); setRemindOpen(false); setRemindAt(""); setNoteOpen(false); setSaving(false);
+    setNote(""); setShot(null); setNoteOpen(false); setSaving(false);
   };
 
   const requestClose = useCallback((restoreFocus = true) => {
     shownRef.current = false; setShown(false);
-    setTimeout(() => invoke("cmd_close_popup", { restoreFocus }), 150);
+    if (isTauriRuntime()) {
+      setTimeout(() => invoke("cmd_close_popup", { restoreFocus }), 150);
+    }
   }, []);
 
   useEffect(() => {
+    if (!isTauriRuntime()) return;
     const uns = [];
     listen("popup-data", (e) => {
       // Show the empty bar instantly (0ms), then populate content in the next
       // paint — decouples "pill appears" from "content fills in".
       shownRef.current = true; setShown(true);
-      setNote(""); setSaving(false); setRemindOpen(false); setRemindAt(""); setNoteOpen(false);
+      setNote(""); setSaving(false); setNoteOpen(false);
       setShot(null); setData({ url: null, title: null, text: null, files: [] });
       requestAnimationFrame(() => {
         setData({ files: [], ...e.payload });
@@ -1122,23 +1386,18 @@ function CapturePill() {
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [requestClose]);
 
-  useEffect(() => {
-    invoke("cmd_get_reminders_enabled").then(setRemindersEnabled).catch(console.error);
-  }, []);
-
   const attachScreenshot = async () => {
+    if (!isTauriRuntime()) return;
     try { const s = await invoke("cmd_take_screenshot"); if (s) setShot({ path: s.path, dataUrl: s.dataUrl }); }
     catch (e) { console.error(e); }
   };
 
   const handleSave = async () => {
+    if (!isTauriRuntime()) return;
     if (saving) return;
     const hasFiles = data.files?.length > 0;
     if (!hasFiles && !data.url && !data.text?.trim() && !shot && !note.trim()) return;
     setSaving(true);
-    const remindStr = remindAt.includes("T") && remindAt.split("T")[1]
-      ? remindAt : remindAt ? remindAt.split("T")[0] + "T12:00" : "";
-    const remind = remindStr ? new Date(remindStr).toISOString() : null;
     try {
       if (hasFiles) {
         await invoke("cmd_save_files", { paths: data.files, notes: note || null });
@@ -1155,7 +1414,7 @@ function CapturePill() {
           catch (err) { console.error("html→md failed", err); }
         }
         await invoke("cmd_save_item", {
-          req: { type, url: data.url ?? null, title: data.title ?? null, text: mdText, html: null, file_path: null, notes: note || null, remind_at: remind },
+          req: { type, url: data.url ?? null, title: data.title ?? null, text: mdText, html: null, file_path: null, notes: note || null, remind_at: null },
           screenshotPath: shot?.path ?? null,
         });
       }
@@ -1171,7 +1430,7 @@ function CapturePill() {
 
   const hasText = !!(data.text && data.text.trim());
   const hasContent = data.files?.length > 0 || !!data.url || hasText || !!shot || !!note.trim();
-  const showStack = hasContent || noteOpen || remindOpen;
+  const showStack = hasContent || noteOpen;
   const isFiles = data.files?.length > 0;
 
   return (
@@ -1213,8 +1472,11 @@ function CapturePill() {
                 )}
               </div>
             )}
-            {/* Content + note + reminder — one unified card with hairline dividers */}
-            {!isFiles && (data.title || data.url || hasText || noteOpen || !!note || remindOpen) && (
+            {/* Content + note + reminder — one unified card with hairline dividers.
+                NOTE: a URL-only capture (browser page, nothing selected) does NOT
+                open this card — it would render empty (no title/text). The link is
+                still captured and the Save button still appears. */}
+            {!isFiles && (data.title || hasText || noteOpen || !!note) && (
               <div className="chip-card">
                 {(data.title || hasText) && (
                   <>
@@ -1226,19 +1488,6 @@ function CapturePill() {
                   <div className="ct-section">
                     <input ref={noteRef} placeholder="Add a note…"
                       value={note} onChange={(e) => setNote(e.target.value)} />
-                  </div>
-                )}
-                {remindOpen && remindersEnabled && (
-                  <div className="ct-section">
-                    <div className="ct-section-label">Remind at</div>
-                    <div className="ct-remind-row">
-                      <input type="date"
-                        value={remindAt.split("T")[0] || ""}
-                        onChange={(e) => setRemindAt(e.target.value + "T" + (remindAt.split("T")[1] || "12:00"))} />
-                      <input type="time"
-                        value={remindAt.split("T")[1] || ""}
-                        onChange={(e) => setRemindAt((remindAt.split("T")[0] || new Date().toISOString().split("T")[0]) + "T" + e.target.value)} />
-                    </div>
                   </div>
                 )}
               </div>
@@ -1254,9 +1503,6 @@ function CapturePill() {
         )}
         <button className={`icon-btn ${noteOpen || note ? "active" : ""}`}
           onClick={() => { const next = !noteOpen; setNoteOpen(next); if (next) setTimeout(() => noteRef.current?.focus(), 0); }} title="Note"><IconNote /></button>
-        {!isFiles && hasContent && remindersEnabled && (
-          <button className={`icon-btn ${remindOpen || remindAt ? "active" : ""}`} onClick={() => setRemindOpen((v) => !v)} title="Reminder"><IconAlarm /></button>
-        )}
         <AnimatePresence initial={false}>
           {hasContent && (
             <motion.div key="save-group"

@@ -68,12 +68,30 @@ button { font-family: inherit; cursor: default; }
 }
 .topbar button, .topbar input, .topbar a { -webkit-app-region: no-drag; }
 
-/* mascot, parked bottom-right */
-.brand-float {
-  position: fixed; right: 22px; bottom: 18px; z-index: 5;
-  width: 68px; height: 68px; object-fit: contain;
-  pointer-events: none; user-select: none;
+/* mascot dock: quick file add + visual drop target */
+.brand-dock {
+  position: fixed; right: 20px; bottom: 18px; z-index: 5;
+  width: 72px; height: 72px; border: none; background: transparent;
+  display: inline-flex; align-items: center; justify-content: center;
+  user-select: none; -webkit-app-region: no-drag;
 }
+.brand-dock img {
+  position: relative; z-index: 2;
+  width: 68px; height: 68px; object-fit: contain;
+  filter: drop-shadow(0 8px 18px rgba(20,20,30,.14));
+  transition: transform .18s var(--ease), filter .18s var(--ease);
+}
+.brand-dock:hover img, .brand-dock.is-active img { transform: translateY(-2px) scale(1.06); filter: drop-shadow(0 12px 22px rgba(20,20,30,.22)); }
+.brand-dock-tip {
+  position: absolute; right: 0; bottom: 78px; z-index: 3;
+  padding: 7px 10px; border-radius: var(--r-pill);
+  background: rgba(22,22,29,.88); color: #fff;
+  font-size: 11.5px; font-weight: 600; white-space: nowrap;
+  opacity: 0; transform: translateY(4px); pointer-events: none;
+  transition: opacity .16s var(--ease), transform .16s var(--ease);
+  box-shadow: var(--shadow-2);
+}
+.brand-dock:hover .brand-dock-tip, .brand-dock.is-active .brand-dock-tip { opacity: 1; transform: none; }
 /* whole-window drag & drop overlay */
 .drop-overlay {
   position: fixed; inset: 0; z-index: 200; pointer-events: none;
@@ -157,6 +175,15 @@ button { font-family: inherit; cursor: default; }
   font-size: 12.5px; color: var(--text2); line-height: 1.45;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
+/* Highlight/text preview: preserves line breaks and grows with the content
+   (capped so a huge note can't dominate the grid). This is what gives text
+   cards their varied heights. */
+.card-quote {
+  font-size: 13px; color: var(--text2); line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word;
+  display: -webkit-box; -webkit-line-clamp: 12; -webkit-box-orient: vertical; overflow: hidden;
+}
+.card-quote.lead { font-size: 14px; font-weight: 500; color: var(--text); }
 .card-foot { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 6px; color: var(--text3); font-size: 11px; }
 .card-foot .bell { display: inline-flex; align-items: center; gap: 3px; color: var(--accent); }
 .card-foot .bell svg { width: 12px; height: 12px; }
@@ -205,13 +232,6 @@ button { font-family: inherit; cursor: default; }
   border: 1px solid var(--border); color: var(--text2);
 }
 .fileview-glyph svg { width: 48px; height: 48px; stroke-width: 1.5; }
-.fileview-kind {
-  position: absolute; left: 0; right: 0; bottom: 0;
-  font-size: 9.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
-  color: var(--text3); text-align: center;
-  padding: 4px 0 5px;
-  background: rgba(255,255,255,0.72); backdrop-filter: blur(4px);
-}
 .fileview-wave {
   position: absolute; left: 0; right: 0; bottom: 0; height: 34px; opacity: .55;
   background-repeat: repeat-x; background-position: center bottom;
@@ -558,6 +578,91 @@ button { font-family: inherit; cursor: default; }
 .btn-danger { background: transparent; color: var(--danger); border-color: var(--border2); }
 .btn-danger:hover { background: var(--danger-soft); border-color: var(--danger); }
 
+/* ── First-run onboarding ─────────────────────────── */
+.onboarding-scrim {
+  position: fixed; inset: 0; z-index: 80;
+  display: flex; align-items: center; justify-content: center;
+  padding: 28px;
+  background:
+    radial-gradient(circle at 50% 18%, rgba(255,117,24,.14), transparent 32%),
+    rgba(251,251,252,.84);
+  backdrop-filter: blur(20px) saturate(150%);
+}
+.onboarding {
+  width: min(460px, 100%);
+  border-radius: 22px;
+  background: rgba(255,255,255,.96);
+  border: 1px solid rgba(224,224,230,.84);
+  box-shadow: var(--shadow-pop);
+  padding: 28px 24px 22px;
+}
+.onboarding-hero {
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  gap: 8px;
+  padding-bottom: 20px; border-bottom: 1px solid var(--border);
+}
+.onboarding-mark {
+  width: 76px; height: 76px; border-radius: 22px;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(145deg, #fff, #fff4ec);
+  box-shadow: inset 0 0 0 1px rgba(255,117,24,.16), 0 10px 24px rgba(255,117,24,.12);
+  margin-bottom: 4px;
+}
+.onboarding-mark img { width: 60px; height: 60px; object-fit: contain; }
+.onboarding h1 {
+  font-size: 22px; line-height: 1.15; letter-spacing: -0.2px;
+  color: var(--text); font-weight: 700; margin: 0;
+}
+.onboarding p {
+  color: var(--text2); font-size: 14px; line-height: 1.5; margin: 0;
+}
+kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 34px; height: 24px; padding: 0 8px;
+  border-radius: 7px; border: 1px solid var(--border2);
+  background: #fff; color: var(--text); font: inherit; font-weight: 650;
+  box-shadow: inset 0 -1px 0 rgba(20,20,30,.08);
+}
+.permission-list { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; }
+.permission-card {
+  display: grid; grid-template-columns: 38px 1fr auto; gap: 12px; align-items: center;
+  padding: 11px 12px; border-radius: var(--r-md);
+  background: var(--bg2); border: 1px solid var(--border);
+  transition: background 0.18s, border-color 0.18s;
+}
+.permission-card.ready {
+  background: #f2fbf4; border-color: rgba(22,163,74,.2);
+}
+.permission-icon {
+  width: 38px; height: 38px; border-radius: 11px;
+  display: flex; align-items: center; justify-content: center;
+  background: #fff; color: var(--accent); border: 1px solid var(--border);
+}
+.permission-title { font-size: 13.5px; color: var(--text); font-weight: 600; }
+.permission-optional { font-size: 10.5px; font-weight: 500; color: var(--text3); background: var(--bg2); border-radius: var(--r-pill); padding: 1px 6px; margin-left: 5px; vertical-align: middle; }
+.permission-sub { font-size: 11.5px; line-height: 1.4; color: var(--text3); margin-top: 1px; word-break: break-all; }
+.permission-hint { font-size: 11.5px; line-height: 1.45; color: var(--text2); margin-top: 4px; }
+.permission-hint.warn { color: #b45309; }
+.permission-hint .linklike { color: var(--accent); cursor: pointer; text-decoration: underline; }
+.permission-action { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+.permission-check {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 50%;
+  background: rgba(22,163,74,.12); color: var(--ok);
+}
+.permission-check svg { width: 14px; height: 14px; }
+.permission-note {
+  display: flex; align-items: center; gap: 10px;
+  padding: 4px 3px 0; color: var(--text3);
+  font-size: 12px; line-height: 1.45;
+}
+.permission-note svg { width: 16px; height: 16px; flex: none; }
+.onboarding-actions {
+  display: flex; justify-content: center; gap: 10px;
+  padding-top: 20px;
+}
+.onboarding-actions .btn-primary { padding-left: 28px; padding-right: 28px; }
+
 /* ── Settings ──────────────────────────────────────── */
 .settings-overlay {
   position: fixed; inset: 0; z-index: 40; background: var(--bg);
@@ -613,7 +718,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   line-height: 1.55; white-space: pre-wrap; margin-top: 2px;
   display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden;
 }
-.chip-card .ct-url { font-size: 12.5px; color: var(--accent); margin-top: 4px; word-break: break-all; }
 .chip-card .ct-files { font-size: 13.5px; }
 .chip-card.shot { padding: 0; position: relative; overflow: hidden; }
 .chip-card.shot img { display: block; width: 100%; max-height: 130px; object-fit: cover; object-position: top; background: var(--bg2); }
@@ -664,6 +768,14 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .bar button, .bar input { -webkit-app-region: no-drag; }
 .bar-logo { width: 26px; height: 26px; object-fit: contain; margin: 0 4px 0 2px; }
 .bar .save-btn { padding: 7px 14px; margin-left: 2px; }
+
+@media (max-width: 620px) {
+  .onboarding { padding: 20px; border-radius: 18px; }
+  .permission-card { grid-template-columns: 38px 1fr; }
+  .permission-action { grid-column: 2; justify-content: flex-start; }
+  .onboarding-actions { flex-direction: column-reverse; }
+  .onboarding-actions .btn { width: 100%; }
+}
 
 /* scrollbar */
 ::-webkit-scrollbar { width: 9px; height: 9px; }

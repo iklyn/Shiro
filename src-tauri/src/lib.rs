@@ -1,10 +1,16 @@
+// objc 0.2's AppKit macros still emit cfg(cargo-clippy), which modern Rust
+// reports as an unexpected cfg from our expansion sites. It is dependency noise.
+#![allow(unexpected_cfgs)]
+
 #[cfg(target_os = "macos")]
 mod accessibility;
 mod commands;
 mod db;
+#[cfg(target_os = "macos")]
+mod mac_input;
 mod storage;
 
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -19,7 +25,6 @@ use storage::StorageDir;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -44,82 +49,6 @@ pub fn run() {
                 commands::rebuild_index(&conn, &storage_dir);
             }
             app.manage(db.clone());
-
-            // ── Reminder notifier ───────────────────────────────────────────
-            // Event-driven: sleeps until the exact time of the next reminder
-            // (or 1 hour if none are set), and is woken immediately when the
-            // user saves a new reminder. No polling; zero wasted wakeups.
-            {
-                let waker: commands::ReminderWaker =
-                    Arc::new((Mutex::new(()), Condvar::new()));
-                app.manage(waker.clone());
-
-                let db_notif = db.clone();
-                std::thread::spawn(move || {
-                    let (lock, cvar) = &*waker;
-                    loop {
-                        // How long until the next reminder?
-                        let sleep_dur = match db_notif.lock() {
-                            Err(_) => std::time::Duration::from_secs(60),
-                            Ok(conn) => {
-                                let now_str = chrono::Utc::now().to_rfc3339();
-                                let next: Option<String> = conn
-                                    .query_row(
-                                        "SELECT MIN(remind_at) FROM items \
-                                         WHERE remind_at IS NOT NULL AND remind_at > ?1",
-                                        rusqlite::params![now_str],
-                                        |r| r.get::<_, Option<String>>(0),
-                                    )
-                                    .unwrap_or(None);
-                                match next.and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok().map(|t| t.with_timezone(&chrono::Utc))) {
-                                    Some(t) => {
-                                        let secs = (t - chrono::Utc::now()).num_seconds().max(0) as u64;
-                                        std::time::Duration::from_secs(secs.max(1))
-                                    }
-                                    None => std::time::Duration::from_secs(3600),
-                                }
-                            }
-                        };
-
-                        // Sleep until the next reminder or until signalled by a new save.
-                        let guard = lock.lock().unwrap();
-                        let _ = cvar.wait_timeout(guard, sleep_dur);
-
-                        // Fire all currently due reminders.
-                        let now = chrono::Utc::now().to_rfc3339();
-                        let mut due: Vec<(String, String)> = Vec::new();
-                        if let Ok(conn) = db_notif.lock() {
-                            if let Ok(mut stmt) = conn.prepare(
-                                "SELECT id, COALESCE(NULLIF(title,''), NULLIF(text,''), 'Reminder') \
-                                 FROM items WHERE remind_at IS NOT NULL AND remind_at <= ?1",
-                            ) {
-                                if let Ok(rows) = stmt.query_map([&now], |r| {
-                                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                                }) {
-                                    due = rows.filter_map(|x| x.ok()).collect();
-                                }
-                            }
-                        }
-                        for (id, body) in due {
-                            let safe: String =
-                                body.replace('"', "'").chars().take(120).collect();
-                            let _ = std::process::Command::new("osascript")
-                                .arg("-e")
-                                .arg(format!(
-                                    "display notification \"{safe}\" \
-                                     with title \"Shiro\" sound name \"Glass\""
-                                ))
-                                .output();
-                            if let Ok(conn) = db_notif.lock() {
-                                let _ = conn.execute(
-                                    "UPDATE items SET remind_at = NULL WHERE id = ?1",
-                                    [&id],
-                                );
-                            }
-                        }
-                    }
-                });
-            }
 
             // ── Main window: hide on close so the tray can re-open it ───────
             if let Some(main_win) = app.get_webview_window("main") {
@@ -211,9 +140,13 @@ pub fn run() {
                 MenuItem::with_id(app, "quit", "Quit", true, None::<&str>),
             ) {
                 if let Ok(menu) = Menu::with_items(app, &[&open_i, &capture_i, &quit_i]) {
-                    if let Some(icon) = app.default_window_icon() {
-                        let _ = TrayIconBuilder::new()
-                            .icon(icon.clone())
+                    {
+                        // Menu-bar icon: just the Shiro mascot (transparent, no square).
+                        // Not a template image, so its colours show as-is.
+                        let tray_icon = tauri::include_image!("icons/tray.png");
+                        let _ = TrayIconBuilder::with_id("shiro-tray")
+                            .icon(tray_icon)
+                            .icon_as_template(false)
                             .menu(&menu)
                             .show_menu_on_left_click(false)
                             .on_tray_icon_event(|tray, event| {
@@ -267,14 +200,6 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Regular);
 
-            // ── Nudge the macOS Accessibility prompt on first run ────────────
-            std::thread::spawn(|| {
-                let _ = std::process::Command::new("osascript")
-                    .arg("-e")
-                    .arg(r#"tell application "System Events" to get processes whose frontmost is true"#)
-                    .output();
-            });
-
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -294,12 +219,14 @@ pub fn run() {
             cmd_reveal_in_finder,
             cmd_take_screenshot,
             cmd_read_image,
+            cmd_get_setting,
+            cmd_set_setting,
+            cmd_screen_capture_status,
+            cmd_request_screen_capture,
             cmd_accessibility_status,
             cmd_request_accessibility,
             cmd_open_accessibility_settings,
-            cmd_get_reminders_enabled,
-            cmd_set_reminders_enabled,
-            cmd_open_notification_settings,
+            cmd_open_screen_recording_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running shiro");

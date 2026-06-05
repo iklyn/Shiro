@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Manager};
 
-/// Where the user's data lives (db + files/ + pages/). Shared, mutable so the
+/// Where the user's data lives (db + files). Shared, mutable so the
 /// user can relocate it at runtime.
 pub type StorageDir = Arc<Mutex<PathBuf>>;
 
@@ -22,9 +22,13 @@ fn config_path(app: &AppHandle) -> PathBuf {
 /// The default storage location used on first run, before the user picks one.
 fn default_storage_dir(app: &AppHandle) -> PathBuf {
     app.path()
-        .app_data_dir()
-        .unwrap_or_else(|_| PathBuf::from("/tmp/shiro"))
-        .join("data")
+        .desktop_dir()
+        .unwrap_or_else(|_| {
+            app.path()
+                .app_data_dir()
+                .unwrap_or_else(|_| PathBuf::from("/tmp/shiro"))
+        })
+        .join("Shiro")
 }
 
 /// Resolve the configured storage dir (or the default), creating the folder
@@ -56,7 +60,7 @@ pub fn write_config(app: &AppHandle, dir: &Path) -> Result<(), String> {
 /// (.md for highlights/links, originals for files), and a hidden `.shiro/`
 /// holds the rebuildable SQLite search index.
 pub fn ensure_layout(dir: &Path) {
-    for sub in [".shiro", "Highlights", "Links", "Pages", "Files", "Images"] {
+    for sub in [".shiro", "Highlights", "Links", "Files", "Images"] {
         let _ = std::fs::create_dir_all(dir.join(sub));
     }
 }
@@ -73,11 +77,6 @@ pub fn highlights_dir(dir: &Path) -> PathBuf {
 
 pub fn links_dir(dir: &Path) -> PathBuf {
     dir.join("Links")
-}
-
-#[allow(dead_code)] // reserved for saved web pages
-pub fn pages_dir(dir: &Path) -> PathBuf {
-    dir.join("Pages")
 }
 
 pub fn files_dir(dir: &Path) -> PathBuf {
@@ -102,7 +101,11 @@ pub fn sanitize_filename(name: &str) -> String {
         })
         .collect();
     let trimmed = cleaned.trim().trim_matches('.').trim();
-    let base = if trimmed.is_empty() { "untitled" } else { trimmed };
+    let base = if trimmed.is_empty() {
+        "untitled"
+    } else {
+        trimmed
+    };
     base.chars().take(80).collect()
 }
 
