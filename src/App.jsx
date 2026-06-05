@@ -1320,6 +1320,17 @@ function Settings({ onBack }) {
         <div className="hint">
           Grant these under <span className="linklike" onClick={() => isTauriRuntime() && invoke("cmd_open_accessibility_settings")}>System Settings → Privacy &amp; Security</span>.
         </div>
+
+        <div className="made-by">
+          Made by{" "}
+          <span
+            className="made-by-link"
+            title="kalyanaslog1@gmail.com"
+            onClick={() => openUrl("mailto:kalyanaslog1@gmail.com")}
+          >
+            Kalyan
+          </span>
+        </div>
       </div>
     </div>
   );
