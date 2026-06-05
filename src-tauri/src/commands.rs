@@ -563,39 +563,69 @@ pub fn cmd_update_notes(db: tauri::State<Db>, id: String, notes: String) -> Resu
 
 #[tauri::command]
 pub fn cmd_search(db: tauri::State<Db>, query: String) -> Result<Vec<Item>, String> {
-    if query.trim().is_empty() {
+    let q = query.trim().to_string();
+    if q.is_empty() {
         return Ok(vec![]);
     }
 
     let conn = db.lock().map_err(|e| e.to_string())?;
-    // Wrap each whitespace-separated term in double quotes (escaping any embedded
-    // quotes) and append a prefix wildcard. Without this, characters that FTS5
-    // treats as operators (", *, :, -, etc.) raise a syntax error and search
-    // silently returns nothing.
-    let fts_query = query
+
+    // ── FTS pass ─────────────────────────────────────────────────────────────
+    // Indexes: title, text, notes, url, file_path.
+    // Each term is quoted (so special chars don't parse as FTS operators) + a
+    // prefix wildcard so "goo" matches "google".
+    let fts_query = q
         .split_whitespace()
         .map(|term| format!("\"{}\"*", term.replace('"', "\"\"")))
         .collect::<Vec<_>>()
         .join(" ");
-    if fts_query.is_empty() {
-        return Ok(vec![]);
-    }
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT i.id, i.type, i.url, i.title, i.text, i.html, i.file_path, i.notes, i.image_path, i.created_at, i.updated_at, i.remind_at
+    let mut fts_results: Vec<Item> = Vec::new();
+    if !fts_query.is_empty() {
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT i.id, i.type, i.url, i.title, i.text, i.html, i.file_path, i.notes,
+                    i.image_path, i.created_at, i.updated_at, i.remind_at
              FROM items i
              JOIN items_fts f ON i.rowid = f.rowid
              WHERE items_fts MATCH ?1
              ORDER BY rank",
-        )
-        .map_err(|e| e.to_string())?;
+        ) {
+            if let Ok(rows) = stmt.query_map(params![fts_query], row_to_item) {
+                fts_results = rows.filter_map(|r| r.ok()).collect();
+            }
+        }
+    }
 
-    let rows = stmt
-        .query_map(params![fts_query], row_to_item)
-        .map_err(|e| e.to_string())?;
+    // ── LIKE fallback ─────────────────────────────────────────────────────────
+    // FTS tokenises on word boundaries (splits dots, slashes, hyphens), so
+    // "google.com", "Q3-report.pdf", or a URL path are all tokenised into
+    // multiple pieces. A LIKE scan on url + file_path catches those patterns
+    // when they appear as a substring and deduplicates against FTS results.
+    let pattern = format!("%{}%", q.to_lowercase());
+    let fts_ids: std::collections::HashSet<String> =
+        fts_results.iter().map(|i| i.id.clone()).collect();
 
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    let mut like_extras: Vec<Item> = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT id, type, url, title, text, html, file_path, notes,
+                image_path, created_at, updated_at, remind_at
+         FROM items
+         WHERE lower(url) LIKE ?1
+            OR lower(file_path) LIKE ?1
+            OR lower(title) LIKE ?1
+         ORDER BY created_at DESC",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![pattern], row_to_item) {
+            like_extras = rows
+                .filter_map(|r| r.ok())
+                .filter(|i| !fts_ids.contains(&i.id))
+                .collect();
+        }
+    }
+
+    // FTS results first (ranked by relevance), then LIKE-only additions.
+    fts_results.extend(like_extras);
+    Ok(fts_results)
 }
 
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};

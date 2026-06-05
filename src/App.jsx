@@ -167,7 +167,7 @@ function MainApp() {
 
   const onSearchChange = (q) => {
     setSearch(q);
-    if (q.trim()) runSearch(q);
+    if (q.trim()) { setFilter("all"); runSearch(q); }
     else { setFilter("all"); load(); }
   };
 
@@ -243,7 +243,7 @@ function MainApp() {
                 initial={{ width: 38, opacity: 0 }} animate={{ width: 280, opacity: 1 }} exit={{ width: 38, opacity: 0 }}
                 transition={{ duration: 0.26, ease: [0.16, 1, 0.3, 1] }}>
                 <IconSearch />
-                <input ref={searchRef} placeholder="Search everything…" value={search}
+                <input ref={searchRef} placeholder="Search text, sources, filenames…" value={search}
                   onChange={(e) => onSearchChange(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Escape") toggleSearch(); }} />
                 <button className="clear" onClick={toggleSearch} aria-label="Close search"><IconClose /></button>

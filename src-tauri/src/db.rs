@@ -50,26 +50,26 @@ fn migrate(conn: &Connection) -> Result<()> {
             );
 
             CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
-                title, text, notes,
+                title, text, notes, url, file_path,
                 content=items,
                 content_rowid=rowid
             );
 
             CREATE TRIGGER IF NOT EXISTS items_fts_insert AFTER INSERT ON items BEGIN
-                INSERT INTO items_fts(rowid, title, text, notes)
-                VALUES (new.rowid, new.title, new.text, new.notes);
+                INSERT INTO items_fts(rowid, title, text, notes, url, file_path)
+                VALUES (new.rowid, new.title, new.text, new.notes, new.url, new.file_path);
             END;
 
             CREATE TRIGGER IF NOT EXISTS items_fts_delete AFTER DELETE ON items BEGIN
-                INSERT INTO items_fts(items_fts, rowid, title, text, notes)
-                VALUES ('delete', old.rowid, old.title, old.text, old.notes);
+                INSERT INTO items_fts(items_fts, rowid, title, text, notes, url, file_path)
+                VALUES ('delete', old.rowid, old.title, old.text, old.notes, old.url, old.file_path);
             END;
 
             CREATE TRIGGER IF NOT EXISTS items_fts_update AFTER UPDATE ON items BEGIN
-                INSERT INTO items_fts(items_fts, rowid, title, text, notes)
-                VALUES ('delete', old.rowid, old.title, old.text, old.notes);
-                INSERT INTO items_fts(rowid, title, text, notes)
-                VALUES (new.rowid, new.title, new.text, new.notes);
+                INSERT INTO items_fts(items_fts, rowid, title, text, notes, url, file_path)
+                VALUES ('delete', old.rowid, old.title, old.text, old.notes, old.url, old.file_path);
+                INSERT INTO items_fts(rowid, title, text, notes, url, file_path)
+                VALUES (new.rowid, new.title, new.text, new.notes, new.url, new.file_path);
             END;",
         )?;
 
@@ -107,6 +107,47 @@ fn migrate(conn: &Connection) -> Result<()> {
         conn.execute_batch("ALTER TABLE items ADD COLUMN remind_at TEXT;")?;
         conn.execute(
             "INSERT INTO schema_versions (version, applied_at) VALUES (4, datetime('now'))",
+            [],
+        )?;
+    }
+
+    if current < 5 {
+        // Expand FTS to index url and file_path so searches hit sources and
+        // filenames. Can't ALTER a virtual table — drop and recreate, then
+        // rebuild the entire index from the items content table.
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS items_fts_insert;
+             DROP TRIGGER IF EXISTS items_fts_delete;
+             DROP TRIGGER IF EXISTS items_fts_update;
+             DROP TABLE IF EXISTS items_fts;
+
+             CREATE VIRTUAL TABLE items_fts USING fts5(
+                 title, text, notes, url, file_path,
+                 content=items,
+                 content_rowid=rowid
+             );
+
+             CREATE TRIGGER items_fts_insert AFTER INSERT ON items BEGIN
+                 INSERT INTO items_fts(rowid, title, text, notes, url, file_path)
+                 VALUES (new.rowid, new.title, new.text, new.notes, new.url, new.file_path);
+             END;
+
+             CREATE TRIGGER items_fts_delete AFTER DELETE ON items BEGIN
+                 INSERT INTO items_fts(items_fts, rowid, title, text, notes, url, file_path)
+                 VALUES ('delete', old.rowid, old.title, old.text, old.notes, old.url, old.file_path);
+             END;
+
+             CREATE TRIGGER items_fts_update AFTER UPDATE ON items BEGIN
+                 INSERT INTO items_fts(items_fts, rowid, title, text, notes, url, file_path)
+                 VALUES ('delete', old.rowid, old.title, old.text, old.notes, old.url, old.file_path);
+                 INSERT INTO items_fts(rowid, title, text, notes, url, file_path)
+                 VALUES (new.rowid, new.title, new.text, new.notes, new.url, new.file_path);
+             END;
+
+             INSERT INTO items_fts(items_fts) VALUES('rebuild');",
+        )?;
+        conn.execute(
+            "INSERT INTO schema_versions (version, applied_at) VALUES (5, datetime('now'))",
             [],
         )?;
     }
