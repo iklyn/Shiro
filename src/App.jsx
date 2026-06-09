@@ -584,7 +584,6 @@ function Card({ item, index, onClick }) {
     body = (
       <>
         <div className="filecard-banner">
-          {fk.cat === "audio" && <span className="filecard-wave" aria-hidden />}
           <span className="filecard-glyph"><fk.Icon /></span>
         </div>
         <div className="card-body">
@@ -1155,7 +1154,6 @@ function DetailModal({ item, onClose, onDelete, onSaved }) {
             return (
               <div className="fileview" onClick={() => invoke("cmd_reveal_in_finder", { path: item.file_path })}>
                 <div className="fileview-glyph">
-                  {fk.cat === "audio" && <span className="fileview-wave" aria-hidden />}
                   <fk.Icon />
                 </div>
                 <div className="fileview-name">{item.title || baseName(item.file_path) || "File"}</div>
