@@ -775,15 +775,17 @@ function htmlToMarkdown(html) {
 
   const inline = (node) => Array.from(node.childNodes).map(walk).join("");
 
-  // Many sites format with CSS instead of semantic tags (e.g.
-  // <span style="font-weight:600">). Promote those to **bold** / *italic* so the
-  // formatting survives the trip to Markdown.
+  // Some sites format inline emphasis with CSS instead of semantic tags (e.g.
+  // <span style="font-weight:700">). Promote ONLY genuine bold/italic to Markdown.
+  // CRITICAL: font-weight 400 (normal) and 500 (medium) are NOT bold — counting
+  // them wraps ordinary text in ** and makes everything look bold. Only 600+ or
+  // the bold/bolder keywords qualify.
   const styled = (node, text) => {
     const t = text.trim();
     if (!t) return text;
     const st = (node.getAttribute && node.getAttribute("style") || "").toLowerCase();
-    const fw = st.match(/font-weight:\s*(bold|bolder|[1-9]00)/);
-    const bold = !!fw && fw[1] !== "100" && fw[1] !== "200" && fw[1] !== "300";
+    const fw = st.match(/font-weight:\s*(bold|bolder|([1-9])00)/);
+    const bold = !!fw && (fw[1] === "bold" || fw[1] === "bolder" || parseInt(fw[2], 10) >= 6);
     const italic = /font-style:\s*italic/.test(st);
     let out = t;
     if (italic) out = `*${out}*`;
@@ -832,11 +834,14 @@ function htmlToMarkdown(html) {
           `${ordered ? `${i + 1}.` : "-"} ${inline(li).trim()}`).join("\n") + "\n\n";
       }
       case "p": case "div": case "section": case "article": {
-        const t = styled(node, inline(node)).trim();
+        // Block elements are NEVER wrapped in ** — only their inline children may
+        // carry styled emphasis. Wrapping a whole block bolds everything and
+        // breaks heading/list parsing.
+        const t = inline(node).trim();
         return t ? `${t}\n\n` : "";
       }
       // span / font / mark / u and anything else: keep the text, and promote any
-      // CSS bold/italic styling to Markdown.
+      // CSS bold/italic styling to Markdown (inline only).
       default: return styled(node, inline(node));
     }
   };
