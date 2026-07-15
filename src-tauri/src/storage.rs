@@ -65,6 +65,25 @@ pub fn ensure_layout(dir: &Path) {
     }
 }
 
+/// True if `dir` already holds a Shiro library — an index db, or any non-hidden
+/// artifact in the typed folders. Lets a relocate ADOPT an existing folder (e.g.
+/// an old data folder after a reinstall) as-is instead of copying the current
+/// library over it.
+pub fn has_existing_data(dir: &Path) -> bool {
+    if index_db_path(dir).is_file() {
+        return true;
+    }
+    ["Highlights", "Links", "Files", "Images"].iter().any(|sub| {
+        std::fs::read_dir(dir.join(sub))
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .any(|e| !e.file_name().to_string_lossy().starts_with('.'))
+            })
+            .unwrap_or(false)
+    })
+}
+
 /// Path to the SQLite index. It's a cache: if deleted, it's rebuilt by scanning
 /// the typed folders.
 pub fn index_db_path(dir: &Path) -> PathBuf {

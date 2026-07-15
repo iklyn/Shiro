@@ -248,8 +248,36 @@ pub fn cmd_get_storage_dir(storage: tauri::State<StorageDir>) -> Result<String, 
         .to_string())
 }
 
-/// Relocate the storage folder: copy db + saved artifacts into `new_dir`,
-/// reopen the database there, and remember the choice. Old copies are removed.
+/// Copy one stored artifact (a relative path like "Highlights/foo.md") from one
+/// library into another, collision-safe (never overwrites — unique-names on
+/// clash). Returns its new relative path. Used by the merge path.
+fn copy_artifact(from_dir: &Path, to_dir: &Path, rel: Option<&str>) -> Option<String> {
+    let rel = rel.filter(|s| !s.trim().is_empty())?;
+    let src = from_dir.join(rel);
+    if !src.is_file() {
+        return Some(rel.to_string()); // nothing to copy; keep the reference as-is
+    }
+    let relp = Path::new(rel);
+    let dest_dir = to_dir.join(relp.parent().unwrap_or(Path::new("")));
+    let _ = std::fs::create_dir_all(&dest_dir);
+    let stem = relp.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+    let ext = relp.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let dest = storage::unique_path(&dest_dir, stem, ext);
+    if std::fs::copy(&src, &dest).is_err() {
+        return Some(rel.to_string());
+    }
+    dest.strip_prefix(to_dir)
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+}
+
+/// Relocate the storage folder:
+/// - Target is EMPTY → MOVE the current library into it (copy artifacts + index,
+///   then remove the old copies).
+/// - Target already has a Shiro library → ADOPT it, and MERGE the current library's
+///   items into it (union: each artifact copied collision-safe, rows inserted by id
+///   so re-pointing never duplicates). Both folders are left intact.
+/// Either way the DB is reopened at `new_dir` and the choice is remembered.
 #[tauri::command]
 pub fn cmd_set_storage_dir(
     app: AppHandle,
@@ -261,27 +289,82 @@ pub fn cmd_set_storage_dir(
     if new.as_os_str().is_empty() {
         return Err("empty path".into());
     }
-    std::fs::create_dir_all(&new).map_err(|e| e.to_string())?;
-    storage::ensure_layout(&new);
 
     let old = storage.lock().map_err(|e| e.to_string())?.clone();
     if old == new {
         return Ok(());
     }
 
-    // Fold the WAL back into the index db so a plain copy is consistent.
-    {
+    // Does the target already hold a Shiro library (e.g. an old data folder after a
+    // reinstall)? If so we ADOPT + MERGE rather than overwrite.
+    let adopting = storage::has_existing_data(&new);
+
+    std::fs::create_dir_all(&new).map_err(|e| e.to_string())?;
+    storage::ensure_layout(&new);
+
+    // ADOPTING → snapshot the current library's items now (from the live connection,
+    // so it includes screenshots and anything only in the DB) to merge in below.
+    // MOVING → just copy the folders over.
+    let to_merge: Vec<(String, String, SaveRequest)> = if adopting {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
-    }
+        let mut stmt = conn
+            .prepare("SELECT id, created_at, type, url, title, text, html, file_path, notes, image_path, remind_at FROM items")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    SaveRequest {
+                        item_type: r.get(2)?,
+                        url: r.get(3)?,
+                        title: r.get(4)?,
+                        text: r.get(5)?,
+                        html: r.get(6)?,
+                        file_path: r.get(7)?,
+                        notes: r.get(8)?,
+                        image_path: r.get(9)?,
+                        remind_at: r.get(10)?,
+                    },
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.flatten().collect()
+    } else {
+        // Empty target → move the current library into it (fold the WAL first so a
+        // plain copy is consistent).
+        {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        }
+        for sub in [".shiro", "Highlights", "Links", "Files", "Images"] {
+            storage::copy_dir(&old.join(sub), &new.join(sub)).map_err(|e| e.to_string())?;
+        }
+        Vec::new()
+    };
 
-    // Copy every typed folder + the hidden index.
-    for sub in [".shiro", "Highlights", "Links", "Files", "Images"] {
-        storage::copy_dir(&old.join(sub), &new.join(sub)).map_err(|e| e.to_string())?;
-    }
-
-    // Reopen at the new location and swap the connection inside the shared Mutex.
+    // Open the target's own database (relative file_paths resolve against `new`).
     let new_conn = db::open(&new).map_err(|e| e.to_string())?;
+
+    // Merge the snapshot in: copy each artifact collision-safe, then insert the row
+    // (INSERT OR IGNORE by id — re-pointing at the same folder never duplicates).
+    for (id, created, mut req) in to_merge {
+        let new_fp = copy_artifact(&old, &new, req.file_path.as_deref());
+        // Image-only items store the same path in file_path AND image_path — copy the
+        // artifact once and point both at the single copy.
+        req.image_path = if req.image_path == req.file_path {
+            new_fp.clone()
+        } else {
+            copy_artifact(&old, &new, req.image_path.as_deref())
+        };
+        req.file_path = new_fp;
+        let _ = db::insert_item(&new_conn, &id, &req, &created);
+    }
+
+    // Top up the index from the folders (adopted content / a moved copy).
+    rebuild_index(&new_conn, &new);
+
+    // Swap the connection into the shared Mutex.
     {
         let mut guard = db.lock().map_err(|e| e.to_string())?;
         *guard = new_conn;
@@ -289,9 +372,12 @@ pub fn cmd_set_storage_dir(
     *storage.lock().map_err(|e| e.to_string())? = new.clone();
     storage::write_config(&app, &new)?;
 
-    // Best-effort cleanup of the old copies.
-    for sub in [".shiro", "Highlights", "Links", "Files", "Images"] {
-        let _ = std::fs::remove_dir_all(old.join(sub));
+    // Only remove the old copies when we MOVED — when adopting/merging the old folder
+    // is left intact (nothing is deleted).
+    if !adopting {
+        for sub in [".shiro", "Highlights", "Links", "Files", "Images"] {
+            let _ = std::fs::remove_dir_all(old.join(sub));
+        }
     }
 
     let _ = app.emit("storage-changed", new.to_string_lossy().to_string());
