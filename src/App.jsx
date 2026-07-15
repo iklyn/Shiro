@@ -8,14 +8,27 @@ import { motion, AnimatePresence, LayoutGroup, useMotionValue, animate as fmAnim
 import shiroLogo from "./assets/shiro.png";
 import "./App.css";
 
-const isPopup = new URLSearchParams(window.location.search).get("window") === "popup";
+const windowKind = new URLSearchParams(window.location.search).get("window");
+const isPopup = windowKind === "popup";
+const isAlarm = windowKind === "alarm";
 const isTauriRuntime = () => Boolean(window.__TAURI_INTERNALS__);
-// Only the popup window is transparent (for its rounded card). The main window
-// stays opaque so maximize/resize doesn't flash a black backing.
-if (isPopup) document.documentElement.classList.add("popup");
+// The popup and alarm windows are transparent (rounded floating cards). The main
+// window stays opaque so maximize/resize doesn't flash a black backing.
+if (isPopup || isAlarm) document.documentElement.classList.add("popup");
+
+// One-tap reminder presets (map onto the relative amount + unit model).
+const REMIND_PRESETS = [
+  { label: "10 min", amt: "10", unit: "minutes" },
+  { label: "30 min", amt: "30", unit: "minutes" },
+  { label: "1 hour", amt: "1", unit: "hours" },
+  { label: "3 hours", amt: "3", unit: "hours" },
+  { label: "Tomorrow", amt: "1", unit: "days" },
+];
 
 export default function App() {
-  return isPopup ? <CapturePill /> : <MainApp />;
+  if (isPopup) return <CapturePill />;
+  if (isAlarm) return <AlarmBanner />;
+  return <MainApp />;
 }
 
 /* ── Icons (Lucide-style, stroke 1.75, currentColor) ───────────────────────── */
@@ -143,6 +156,14 @@ function MainApp() {
     const uns = [];
     listen("item-saved", refresh).then((u) => uns.push(u));
     listen("storage-changed", () => { setSearch(""); setFilter("all"); load(); }).then((u) => uns.push(u));
+    // Clicking a reminder opens that note: clear any filter, reload, then select it.
+    listen("open-item", async (e) => {
+      const id = typeof e.payload === "string" ? e.payload : e.payload?.id;
+      if (!id) return;
+      setView("library"); setSearch(""); setFilter("all");
+      await load();
+      setSelectedId(id);
+    }).then((u) => uns.push(u));
     return () => uns.forEach((u) => u?.());
   }, [refresh, load]);
 
@@ -1347,6 +1368,9 @@ function CapturePill() {
   const [shown, setShown] = useState(false);
   const [shot, setShot] = useState(null);
   const [noteOpen, setNoteOpen] = useState(false);
+  const [alarmOpen, setAlarmOpen] = useState(false);
+  const [remindAmt, setRemindAmt] = useState("5");        // "remind in N …"
+  const [remindUnit, setRemindUnit] = useState("minutes");
   const noteRef = useRef(null);
   const wrapRef = useRef(null);
   const barRef = useRef(null);
@@ -1358,6 +1382,30 @@ function CapturePill() {
     shownRef.current = false; setShown(false);
     setData({ url: null, title: null, text: null, files: [] });
     setNote(""); setShot(null); setNoteOpen(false); setSaving(false);
+    setAlarmOpen(false); setRemindAmt("5"); setRemindUnit("minutes");
+  };
+
+  // Minutes-from-now the reminder is set to (0 = none). Single source of truth;
+  // remind_at is computed from this at save time, so there's no flaky picker
+  // state to get lost between opening the field and hitting Save.
+  const reminderMins = () => {
+    const n = parseInt(remindAmt, 10);
+    if (!n || n <= 0) return 0;
+    return n * (remindUnit === "hours" ? 60 : remindUnit === "days" ? 1440 : 1);
+  };
+  // Human "when" for the reminder — absolute time, prefixed with the day when it
+  // lands beyond today ("tomorrow 9:00 AM", "Fri 3:30 PM") so a multi-hour/day
+  // reminder is never ambiguous.
+  const reminderWhen = () => {
+    const m = reminderMins();
+    if (!m) return "";
+    const d = new Date(Date.now() + m * 60000);
+    const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const now = new Date();
+    const tmrw = new Date(now); tmrw.setDate(now.getDate() + 1);
+    if (d.toDateString() === now.toDateString()) return time;
+    if (d.toDateString() === tmrw.toDateString()) return `tomorrow ${time}`;
+    return `${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
   };
 
   const requestClose = useCallback((restoreFocus = true) => {
@@ -1375,6 +1423,7 @@ function CapturePill() {
       // paint — decouples "pill appears" from "content fills in".
       shownRef.current = true; setShown(true);
       setNote(""); setSaving(false); setNoteOpen(false);
+      setAlarmOpen(false); setRemindAmt("5"); setRemindUnit("minutes");
       setShot(null); setData({ url: null, title: null, text: null, files: [] });
       requestAnimationFrame(() => {
         setData({ files: [], ...e.payload });
@@ -1427,8 +1476,10 @@ function CapturePill() {
           try { const md = htmlToMarkdown(data.html); if (md.trim()) mdText = md; }
           catch (err) { console.error("html→md failed", err); }
         }
+        const mins = alarmOpen ? reminderMins() : 0;
         await invoke("cmd_save_item", {
-          req: { type, url: data.url ?? null, title: data.title ?? null, text: mdText, html: null, file_path: null, notes: note || null, remind_at: null },
+          req: { type, url: data.url ?? null, title: data.title ?? null, text: mdText, html: null, file_path: null, notes: note || null,
+                 remind_at: mins > 0 ? new Date(Date.now() + mins * 60000).toISOString() : null },
           screenshotPath: shot?.path ?? null,
         });
       }
@@ -1443,8 +1494,11 @@ function CapturePill() {
   };
 
   const hasText = !!(data.text && data.text.trim());
+  // "Something to save" — real captured/added content. A reminder is a modifier
+  // on that content, not content itself, so it's intentionally excluded: no
+  // reminder can be set (or shown) on an empty pill.
   const hasContent = data.files?.length > 0 || !!data.url || hasText || !!shot || !!note.trim();
-  const showStack = hasContent || noteOpen;
+  const showStack = hasContent || noteOpen || alarmOpen;
   const isFiles = data.files?.length > 0;
 
   return (
@@ -1506,6 +1560,40 @@ function CapturePill() {
                 )}
               </div>
             )}
+            {/* Reminder — a relative "remind in N units". Plain number + select
+                (both commit reliably in the popup's webview, unlike a native
+                datetime picker) → no AM/PM, no timezone, nothing to lose between
+                setting it and Save. Fires the floating alarm panel then. */}
+            {alarmOpen && (
+              <div className="chip-card">
+                <div className="ct-alarm">
+                  <div className="ct-alarm-row">
+                    <IconAlarm />
+                    <span className="ct-alarm-label">Remind me</span>
+                    {reminderWhen() && <span className="ct-alarm-when">{reminderWhen()}</span>}
+                  </div>
+                  <div className="ct-alarm-picks">
+                    {REMIND_PRESETS.map((p) => (
+                      <button key={p.label} type="button"
+                        className={`chip ${remindAmt === p.amt && remindUnit === p.unit ? "active" : ""}`}
+                        onClick={() => { setRemindAmt(p.amt); setRemindUnit(p.unit); }}>
+                        {p.label}
+                      </button>
+                    ))}
+                    <span className="ct-alarm-custom">
+                      <input type="number" min="1" inputMode="numeric" className="ct-alarm-amt"
+                        value={remindAmt} onChange={(e) => setRemindAmt(e.target.value.replace(/[^0-9]/g, ""))} />
+                      <select className="ct-alarm-unit" value={remindUnit}
+                        onChange={(e) => setRemindUnit(e.target.value)}>
+                        <option value="minutes">min</option>
+                        <option value="hours">hr</option>
+                        <option value="days">days</option>
+                      </select>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
@@ -1517,6 +1605,10 @@ function CapturePill() {
         )}
         <button className={`icon-btn ${noteOpen || note ? "active" : ""}`}
           onClick={() => { const next = !noteOpen; setNoteOpen(next); if (next) setTimeout(() => noteRef.current?.focus(), 0); }} title="Note"><IconNote /></button>
+        {hasContent && (
+          <button className={`icon-btn ${alarmOpen ? "active" : ""}`}
+            onClick={() => setAlarmOpen((v) => !v)} title="Reminder"><IconAlarm /></button>
+        )}
         <AnimatePresence initial={false}>
           {hasContent && (
             <motion.div key="save-group"
@@ -1530,6 +1622,71 @@ function CapturePill() {
             </motion.div>
           )}
         </AnimatePresence>
+      </div>
+    </div>
+  );
+}
+
+/* ── Alarm banner (alarm window) ───────────────────────────────────────────── */
+// A floating card shown by the reminder poll thread — a self-drawn NSPanel, not
+// an Apple notification. Same non-activating panel trick as the capture pill, so
+// it floats over full-screen apps without stealing focus or surfacing Shiro.
+function AlarmBanner() {
+  const [item, setItem] = useState(null);
+  const [shown, setShown] = useState(false);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const uns = [];
+    // The alarm SOUND is played natively from Rust (WKWebView suspends WebAudio
+    // without a user gesture, and the alarm has none) — the banner is visual only.
+    listen("alarm-data", (e) => {
+      setItem(e.payload);
+      setShown(true);
+    }).then((u) => uns.push(u));
+    return () => uns.forEach((u) => u?.());
+  }, []);
+
+  const stop = () => {
+    setShown(false);
+    if (isTauriRuntime()) setTimeout(() => invoke("cmd_dismiss_alarm").catch(console.error), 150);
+  };
+  const snooze = (e) => {
+    e?.stopPropagation();
+    setShown(false);
+    if (isTauriRuntime() && item)
+      setTimeout(() => invoke("cmd_snooze_alarm", { id: item.id, minutes: 5 }).catch(console.error), 150);
+  };
+  // Clicking the card opens that note in the main window.
+  const open = () => {
+    setShown(false);
+    if (isTauriRuntime() && item)
+      setTimeout(() => invoke("cmd_open_item", { id: item.id }).catch(console.error), 130);
+  };
+  const dismiss = (e) => { e?.stopPropagation(); stop(); };
+
+  if (!item) return null;
+  const title =
+    stripMarkdown(item.title) || stripMarkdown(item.text) || prettyUrl(item.url) || "Reminder";
+
+  return (
+    <div className="alarm-wrap" style={{
+      opacity: shown ? 1 : 0,
+      transform: shown ? "translateY(0)" : "translateY(-8px)",
+      transition: "opacity .18s var(--ease), transform .18s var(--ease)",
+      pointerEvents: shown ? "auto" : "none",
+    }}>
+      <div className="alarm-card" onClick={open} role="button" tabIndex={0} title="Open note">
+        <button className="alarm-x" onClick={dismiss} aria-label="Dismiss"><IconClose /></button>
+        <div className="alarm-top">
+          <img className="alarm-logo" src={shiroLogo} alt="" />
+          <span className="alarm-kicker">Reminder</span>
+        </div>
+        <div className="alarm-title">{title}</div>
+        <div className="alarm-actions">
+          <span className="alarm-open">Open note →</span>
+          <button className="alarm-snooze" onClick={snooze}>Snooze 5m</button>
+        </div>
       </div>
     </div>
   );

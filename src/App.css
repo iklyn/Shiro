@@ -777,6 +777,75 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .bar-logo { width: 26px; height: 26px; object-fit: contain; margin: 0 4px 0 2px; }
 .bar .save-btn { padding: 7px 14px; margin-left: 2px; }
 
+/* Reminder picker inside the content card */
+.ct-alarm { display: flex; flex-direction: column; gap: 9px; }
+.ct-alarm-row { display: flex; align-items: center; gap: 8px; }
+.ct-alarm-row svg { width: 16px; height: 16px; color: var(--accent); flex: 0 0 auto; }
+.ct-alarm-label { font-size: 13px; color: var(--text2); }
+.ct-alarm-when { font-size: 12.5px; font-weight: 600; color: var(--accent); white-space: nowrap; margin-left: auto; }
+.ct-alarm-picks { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ct-alarm-picks .chip { cursor: pointer; padding: 5px 11px; font-size: 12px; }
+.ct-alarm-custom { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; }
+.ct-alarm-amt {
+  width: 44px; text-align: center; background: var(--bg3);
+  border: 1px solid var(--border2); border-radius: var(--r-sm);
+  padding: 4px 6px; font-size: 13px; color: var(--text); font-family: var(--font);
+  outline: none; -webkit-appearance: none; appearance: none; -moz-appearance: textfield;
+}
+.ct-alarm-unit {
+  -webkit-appearance: auto; appearance: auto; background: var(--bg3);
+  border: 1px solid var(--border2); border-radius: var(--r-sm);
+  padding: 4px 6px; font-size: 13px; color: var(--text); font-family: var(--font); outline: none;
+}
+
+/* Floating reminder card (alarm window) — drops under the tray icon */
+.alarm-wrap {
+  position: fixed; inset: 0;
+  display: flex; justify-content: center; align-items: flex-start;
+  padding: 13px 18px 0;                 /* headroom for the card's soft shadow */
+  pointer-events: none;
+}
+.alarm-card {
+  position: relative;
+  width: 100%; max-width: 300px; pointer-events: auto; cursor: pointer;
+  background: var(--card); border: 1px solid var(--border2);
+  border-radius: 18px;
+  box-shadow: 0 14px 36px -10px rgba(0,0,0,.30), 0 2px 8px rgba(0,0,0,.09);
+  padding: 15px 16px 13px;
+  transition: transform .16s var(--ease), box-shadow .16s var(--ease);
+}
+.alarm-card:hover { transform: translateY(-1px); box-shadow: 0 20px 44px -10px rgba(0,0,0,.34), 0 3px 10px rgba(0,0,0,.11); }
+.alarm-card:active { transform: scale(.994); }
+.alarm-x {
+  position: absolute; top: 8px; right: 8px;
+  width: 24px; height: 24px; display: grid; place-items: center;
+  border-radius: 8px; color: var(--text3); background: transparent; opacity: 0;
+  transition: opacity .15s var(--ease), background .15s var(--ease), color .15s var(--ease);
+}
+.alarm-card:hover .alarm-x { opacity: 1; }
+.alarm-x:hover { background: var(--bg2); color: var(--text); }
+.alarm-x svg { width: 15px; height: 15px; }
+.alarm-top { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; }
+.alarm-logo { width: 19px; height: 19px; object-fit: contain; }
+.alarm-kicker {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .7px;
+  font-weight: 700; color: var(--accent);
+}
+.alarm-title {
+  font-size: 14.5px; line-height: 1.4; color: var(--text); font-weight: 550;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.alarm-actions {
+  display: flex; align-items: center; justify-content: space-between; margin-top: 13px;
+}
+.alarm-open { font-size: 12.5px; font-weight: 600; color: var(--accent); }
+.alarm-snooze {
+  font-size: 12.5px; font-weight: 500; color: var(--text2);
+  padding: 5px 11px; border-radius: 9px; background: var(--bg2);
+  transition: background .15s var(--ease), color .15s var(--ease);
+}
+.alarm-snooze:hover { background: var(--bg3); color: var(--text); }
+
 @media (max-width: 620px) {
   .onboarding { padding: 20px; border-radius: 18px; }
   .permission-card { grid-template-columns: 38px 1fr; }

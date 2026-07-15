@@ -122,6 +122,43 @@ pub fn run() {
                 });
             }
 
+            // ── Pre-create the floating alarm panel (hidden, kept alive) ────
+            let alarm_url = if cfg!(debug_assertions) {
+                "http://localhost:1420?window=alarm"
+            } else {
+                "tauri://localhost?window=alarm"
+            };
+            let _ = WebviewWindowBuilder::new(
+                app,
+                "alarm",
+                tauri::WebviewUrl::External(alarm_url.parse().unwrap()),
+            )
+            .title("Shiro Reminder")
+            .inner_size(340.0, 200.0)
+            .resizable(false)
+            .always_on_top(true)
+            .decorations(false)
+            .transparent(true)
+            .skip_taskbar(true)
+            .visible(false)
+            .build();
+
+            // ── Reminder poll: ring the alarm panel for due items ───────────
+            {
+                let handle = app.handle().clone();
+                let db_poll = db.clone();
+                std::thread::spawn(move || loop {
+                    // Check immediately (fires reminders that came due while the app
+                    // was closed, right at launch), then every few seconds so a
+                    // "remind in 1 min" is punctual. ponytail: 3s poll of one indexed
+                    // query is negligible; a proper timer wheel isn't worth it.
+                    if let Some(item) = commands::take_due_reminder(&db_poll) {
+                        commands::show_alarm(&handle, item);
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                });
+            }
+
             // ── Global hotkey (loaded from settings) ────────────────────────
             let hotkey = {
                 let conn = db.lock().unwrap();
@@ -215,12 +252,12 @@ pub fn run() {
             cmd_set_hotkey,
             cmd_get_storage_dir,
             cmd_set_storage_dir,
-            cmd_open_path,
             cmd_reveal_in_finder,
             cmd_take_screenshot,
             cmd_read_image,
-            cmd_get_setting,
-            cmd_set_setting,
+            cmd_dismiss_alarm,
+            cmd_snooze_alarm,
+            cmd_open_item,
             cmd_screen_capture_status,
             cmd_request_screen_capture,
             cmd_accessibility_status,

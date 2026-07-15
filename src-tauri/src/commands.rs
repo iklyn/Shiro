@@ -298,23 +298,6 @@ pub fn cmd_set_storage_dir(
     Ok(())
 }
 
-/// Open a stored item on disk. Accepts an absolute path or a path relative to
-/// the storage folder (as stored in `file_path`).
-#[tauri::command]
-pub fn cmd_open_path(storage: tauri::State<StorageDir>, path: String) -> Result<(), String> {
-    let p = Path::new(&path);
-    let full = if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        storage.lock().map_err(|e| e.to_string())?.join(p)
-    };
-    std::process::Command::new("open")
-        .arg(&full)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
 /// Reveal a stored file selected in Finder (open -R).
 #[tauri::command]
 pub fn cmd_reveal_in_finder(storage: tauri::State<StorageDir>, path: String) -> Result<(), String> {
@@ -456,20 +439,6 @@ pub fn cmd_request_accessibility() -> bool {
     {
         true
     }
-}
-
-/// Whether the user has enabled the reminders feature (stored in settings).
-/// Generic setting read — used by the frontend for things like onboarding state.
-#[tauri::command]
-pub fn cmd_get_setting(db: tauri::State<Db>, key: String) -> Result<Option<String>, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
-    db::get_setting(&conn, &key).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn cmd_set_setting(db: tauri::State<Db>, key: String, value: String) -> Result<(), String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
-    db::set_setting(&conn, &key, &value).map_err(|e| e.to_string())
 }
 
 /// Open System Settings → Privacy & Security → Screen & System Audio Recording.
@@ -812,6 +781,169 @@ pub fn cmd_close_popup(app: AppHandle, restore_focus: Option<bool>) -> Result<()
     #[cfg(target_os = "macos")]
     if restore_focus.unwrap_or(true) {
         let _ = app.run_on_main_thread(reactivate_prev_app);
+    }
+    Ok(())
+}
+
+// ─── alarm / reminder ────────────────────────────────────────────────────────
+
+/// Load one item by id (same column order as the list queries).
+fn load_item(conn: &rusqlite::Connection, id: &str) -> Option<Item> {
+    conn.query_row(
+        "SELECT id, type, url, title, text, html, file_path, notes, image_path, created_at, updated_at, remind_at
+         FROM items WHERE id = ?1",
+        params![id],
+        row_to_item,
+    )
+    .ok()
+}
+
+/// Find the earliest item whose reminder is now due, clear its reminder (a
+/// reminder is one-shot), and return the item so the caller can ring it.
+/// Compares as *parsed* timestamps, so it doesn't matter whether the stored
+/// string ends in `Z` or `+00:00`. Called from the poll thread.
+pub fn take_due_reminder(db: &Db) -> Option<Item> {
+    let conn = db.lock().ok()?;
+    let now = chrono::Utc::now();
+
+    let due_id = {
+        let mut stmt = conn
+            .prepare("SELECT id, remind_at FROM items WHERE remind_at IS NOT NULL")
+            .ok()?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .ok()?;
+        let mut best: Option<(String, chrono::DateTime<chrono::Utc>)> = None;
+        for (id, at) in rows.flatten() {
+            if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&at) {
+                let ts = ts.with_timezone(&chrono::Utc);
+                if ts <= now && best.as_ref().map_or(true, |(_, b)| ts < *b) {
+                    best = Some((id, ts));
+                }
+            }
+        }
+        best?.0
+    };
+
+    conn.execute("UPDATE items SET remind_at = NULL WHERE id = ?1", params![due_id])
+        .ok()?;
+    load_item(&conn, &due_id)
+}
+
+/// Whether the alarm is currently ringing — gates the native sound loop so
+/// Stop/Snooze can silence it.
+static ALARM_RINGING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Ring a native, looping alarm sound (macOS `afplay`) for up to 30s or until
+/// stopped. NATIVE on purpose: the alarm fires with no user gesture in its
+/// webview, and WKWebView suspends WebAudio without one — so a JS beep would be
+/// silent. Like Infinity's NSSound loop, this is guaranteed audible.
+fn start_alarm_sound() {
+    use std::sync::atomic::Ordering;
+    if ALARM_RINGING.swap(true, Ordering::Relaxed) {
+        return; // already ringing
+    }
+    std::thread::spawn(|| {
+        let start = std::time::Instant::now();
+        while ALARM_RINGING.load(Ordering::Relaxed) && start.elapsed().as_secs() < 30 {
+            // Blocks ~1s per play; the flag is re-checked between loops so Stop
+            // silences within ~1s. ponytail: 1s stop-tail is fine, no child-kill.
+            let _ = std::process::Command::new("afplay")
+                .arg("/System/Library/Sounds/Funk.aiff")
+                .status();
+        }
+        ALARM_RINGING.store(false, Ordering::Relaxed);
+    });
+}
+
+fn stop_alarm_sound() {
+    ALARM_RINGING.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Show the floating alarm panel for a due item. Reuses the same non-activating
+/// NSPanel trick as the capture pill, so it floats over full-screen apps without
+/// stealing focus or surfacing Shiro. Anchored top-left, just below the menu bar.
+pub fn show_alarm(app: &AppHandle, item: Item) {
+    start_alarm_sound();
+    let Some(win) = app.get_webview_window("alarm") else {
+        return;
+    };
+    let _ = win.emit("alarm-data", &item);
+
+    // Fixed top-left, just below the menu bar.
+    let scale = win.scale_factor().unwrap_or(2.0);
+    let (mon_x, mon_y) = match win.primary_monitor() {
+        Ok(Some(mon)) => (mon.position().x as f64, mon.position().y as f64),
+        _ => (0.0, 0.0),
+    };
+    let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+        x: (mon_x + 16.0 * scale) as i32,
+        y: (mon_y + 32.0 * scale) as i32,
+    }));
+
+    #[cfg(target_os = "macos")]
+    {
+        let w = win.clone();
+        let _ = app.run_on_main_thread(move || present_panel(&w));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = win.show();
+    }
+}
+
+/// Clicking the alarm card: silence it, hide the panel, then surface the main
+/// window and tell the UI to open that item's note.
+#[tauri::command]
+pub fn cmd_open_item(app: AppHandle, id: String) -> Result<(), String> {
+    stop_alarm_sound();
+    if let Some(al) = app.get_webview_window("alarm") {
+        let _ = al.hide();
+    }
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.set_focus();
+        #[cfg(target_os = "macos")]
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+        let _ = win.emit("open-item", &id);
+    }
+    Ok(())
+}
+
+/// Stop button: silence the sound + hide the alarm panel (the reminder was
+/// already cleared when it fired).
+#[tauri::command]
+pub fn cmd_dismiss_alarm(app: AppHandle) -> Result<(), String> {
+    stop_alarm_sound();
+    if let Some(win) = app.get_webview_window("alarm") {
+        win.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Snooze button: re-arm the reminder `minutes` from now and hide the panel. The
+/// poll thread will ring it again when it comes due.
+#[tauri::command]
+pub fn cmd_snooze_alarm(
+    db: tauri::State<Db>,
+    app: AppHandle,
+    id: String,
+    minutes: i64,
+) -> Result<(), String> {
+    stop_alarm_sound();
+    let when = (chrono::Utc::now() + chrono::Duration::minutes(minutes.max(1))).to_rfc3339();
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE items SET remind_at = ?1 WHERE id = ?2",
+            params![when, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if let Some(win) = app.get_webview_window("alarm") {
+        let _ = win.hide();
     }
     Ok(())
 }
