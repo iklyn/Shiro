@@ -158,7 +158,7 @@ fn migrate(conn: &Connection) -> Result<()> {
 pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>> {
     let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
     let mut rows = stmt.query(params![key])?;
-    Ok(rows.next()?.map(|r| r.get(0)).transpose()?)
+    rows.next()?.map(|r| r.get(0)).transpose()
 }
 
 pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {

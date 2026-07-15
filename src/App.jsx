@@ -1,5 +1,5 @@
-import { useEffect, useState, useCallback, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useEffect, useState, useCallback, useRef, memo, useMemo } from "react";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -16,14 +16,9 @@ const isTauriRuntime = () => Boolean(window.__TAURI_INTERNALS__);
 // window stays opaque so maximize/resize doesn't flash a black backing.
 if (isPopup || isAlarm) document.documentElement.classList.add("popup");
 
-// One-tap reminder presets (map onto the relative amount + unit model).
-const REMIND_PRESETS = [
-  { label: "10 min", amt: "10", unit: "minutes" },
-  { label: "30 min", amt: "30", unit: "minutes" },
-  { label: "1 hour", amt: "1", unit: "hours" },
-  { label: "3 hours", amt: "3", unit: "hours" },
-  { label: "Tomorrow", amt: "1", unit: "days" },
-];
+const pad2 = (n) => String(n).padStart(2, "0");
+const dateInputValue = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const timeInputValue = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 
 export default function App() {
   if (isPopup) return <CapturePill />;
@@ -240,9 +235,20 @@ function MainApp() {
     setShowOnboarding(false);
   };
 
-  const visible = filter === "all"
-    ? items
-    : items.filter((it) => (filter === "image" ? !!it.image_path : it.type === filter));
+  // Memoised so the grid keeps a stable `items` reference — otherwise every
+  // MainApp render (e.g. opening the modal) hands MasonryGrid a new array and it
+  // re-renders + re-measures the whole framer `layout` grid = jitter.
+  const visible = useMemo(
+    () => (filter === "all"
+      ? items
+      : items.filter((it) => (filter === "image" ? !!it.image_path : it.type === filter))),
+    [items, filter]
+  );
+  // Stable card renderer + select handler so memo(Card)/memo(MasonryGrid) hold.
+  const renderCard = useCallback(
+    (it, i) => <Card key={it.id} item={it} index={i} onSelect={setSelectedId} />,
+    []
+  );
 
   const selected = items.find((i) => i.id === selectedId) ?? null;
 
@@ -302,12 +308,7 @@ function MainApp() {
             <p>{searching ? "Try a different search." : `Select text anywhere and press ${shortcutDisplay(hotkey)}, or drop files anywhere in Shiro.`}</p>
           </div>
         ) : (
-          <MasonryGrid
-            items={visible}
-            renderCard={(it, i) => (
-              <Card key={it.id} item={it} index={i} onClick={() => setSelectedId(it.id)} />
-            )}
-          />
+          <MasonryGrid items={visible} renderCard={renderCard} />
         )}
       </main>
 
@@ -500,7 +501,7 @@ function Onboarding({ hotkey, axTrusted, screenTrusted, storageDir,
 const MASONRY_EASE = [0.16, 1, 0.3, 1];
 const MASONRY_DUR  = 0.42;
 
-function MasonryGrid({ items, renderCard }) {
+const MasonryGrid = memo(function MasonryGrid({ items, renderCard }) {
   const ref = useRef(null);
   const [cols, setCols] = useState(4);
 
@@ -539,7 +540,7 @@ function MasonryGrid({ items, renderCard }) {
       </motion.div>
     </LayoutGroup>
   );
-}
+});
 
 // Flatten markdown to readable plain text for card previews — strips the
 // formatting symbols (**, `, #, >, -, links) while keeping the words.
@@ -562,14 +563,14 @@ function stripMarkdown(s) {
     .trim();
 }
 
-function Card({ item, index, onClick }) {
+const Card = memo(function Card({ item, index, onSelect }) {
   const [thumb, setThumb] = useState(null);
   useEffect(() => {
     let alive = true;
     // Load thumbnail for screenshots, and also for image-extension files saved via drag-drop / Finder.
     const imgPath = item.image_path
       || (item.type === "file" && isImagePath(item.file_path) ? item.file_path : null);
-    if (imgPath) invoke("cmd_read_image", { path: imgPath }).then((u) => alive && setThumb(u)).catch(() => {});
+    if (imgPath) invoke("cmd_image_src", { path: imgPath }).then((abs) => alive && setThumb(convertFileSrc(abs))).catch(() => {});
     return () => { alive = false; };
   }, [item.id]);
 
@@ -617,7 +618,7 @@ function Card({ item, index, onClick }) {
       </>
     );
   } else if (thumb) {
-    body = <img className="card-thumb" src={thumb} alt="" />;
+    body = <img className="card-thumb" src={thumb} alt="" loading="lazy" decoding="async" />;
   } else {
     // Text/highlight card. Render plain text (no markdown symbols). The quote
     // block isn't line-clamped to a fixed 2 lines, so longer notes make taller
@@ -644,7 +645,7 @@ function Card({ item, index, onClick }) {
   return (
     <motion.div
       className={`card${!thumb && !flat ? " card-text" : ""}`}
-      onClick={onClick}
+      onClick={() => onSelect(item.id)}
       layout
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
@@ -656,7 +657,7 @@ function Card({ item, index, onClick }) {
       {body}
     </motion.div>
   );
-}
+});
 
 /* ── Helpers for floating notes ────────────────────────────────────────────── */
 function parseNoteCards(raw) {
@@ -988,7 +989,43 @@ function DetailModal({ item, onClose, onDelete, onSaved }) {
     setImg(null);
     setFooterBg(null);
     setFooterTheme("dark");
-    if (imgPath) invoke("cmd_read_image", { path: imgPath }).then(setImg).catch(console.error);
+    let live = true;
+    let objUrl = null;
+    // Do EVERYTHING before revealing the modal — decode (so it opens at final size)
+    // AND the footer luminance (colour + blur strip) — so nothing pops in or recolours
+    // at the last moment. One native read → blob lets us both size and sample on a
+    // non-tainted canvas (asset:// taints it).
+    if (imgPath) {
+      invoke("cmd_image_src", { path: imgPath }).then(async (abs) => {
+        const assetUrl = convertFileSrc(abs);
+        let display = assetUrl, bg = null, theme = "dark";
+        try {
+          const blob = await (await fetch(assetUrl)).blob();
+          objUrl = URL.createObjectURL(blob);
+          const im = new Image();
+          im.src = objUrl;
+          await im.decode();
+          display = objUrl;
+          try {
+            const srcH = Math.min(80, im.height);
+            const w = Math.min(256, im.width);
+            const h = Math.max(1, Math.round(srcH * w / im.width));
+            const canvas = document.createElement("canvas");
+            canvas.width = w; canvas.height = h;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(im, 0, im.height - srcH, im.width, srcH, 0, 0, w, h);
+            const data = ctx.getImageData(0, 0, w, h).data;
+            let sum = 0;
+            for (let i = 0; i < data.length; i += 4)
+              sum += data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+            theme = sum / (data.length / 4) > 130 ? "light" : "dark";
+            if (isImageOnly) bg = canvas.toDataURL("image/jpeg", 0.85);
+          } catch (_) {}
+        } catch (_) { /* fall back to the asset URL + default footer */ }
+        if (live) { setFooterTheme(theme); setFooterBg(bg); setImg(display); }
+        else if (objUrl) URL.revokeObjectURL(objUrl);
+      }).catch(console.error);
+    }
     const onKey = (e) => {
       if (e.key === "Escape") {
         const { id, notes: n } = unmountRef.current;
@@ -997,7 +1034,7 @@ function DetailModal({ item, onClose, onDelete, onSaved }) {
       }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => { live = false; if (objUrl) URL.revokeObjectURL(objUrl); window.removeEventListener("keydown", onKey); };
   }, [item.id]);
 
   useEffect(() => {
@@ -1006,30 +1043,6 @@ function DetailModal({ item, onClose, onDelete, onSaved }) {
       invoke("cmd_update_notes", { id, notes: n }).catch(console.error);
     };
   }, []);
-
-  // Analyse the bottom strip of the loaded image to pick white vs dark footer text.
-  useEffect(() => {
-    if (!img) return;
-    try {
-      const image = new Image();
-      image.onload = () => {
-        try {
-          const sampleH = Math.min(80, image.height);
-          const canvas = document.createElement("canvas");
-          canvas.width = image.width; canvas.height = sampleH;
-          const ctx = canvas.getContext("2d");
-          ctx.drawImage(image, 0, image.height - sampleH, image.width, sampleH, 0, 0, image.width, sampleH);
-          const data = ctx.getImageData(0, 0, image.width, sampleH).data;
-          let sum = 0;
-          for (let i = 0; i < data.length; i += 4)
-            sum += data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-          setFooterTheme(sum / (data.length / 4) > 130 ? "light" : "dark");
-          if (isImageOnly) setFooterBg(canvas.toDataURL("image/jpeg", 0.9));
-        } catch (_) {}
-      };
-      image.src = img;
-    } catch (_) {}
-  }, [img]);
 
   const saveTimer = useRef(null);
   useEffect(() => {
@@ -1125,6 +1138,10 @@ function DetailModal({ item, onClose, onDelete, onSaved }) {
     </AnimatePresence>
   );
 
+  // Hold the image modal until the bitmap is decoded (img set) so it animates in at
+  // its final size instead of resizing mid-spring. Fast via the asset protocol.
+  if (isImageOnly && !img) return null;
+
   if (isImageOnly) {
     return (
       <motion.div className="scrim" onClick={closeAndSave}
@@ -1136,7 +1153,7 @@ function DetailModal({ item, onClose, onDelete, onSaved }) {
           initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
           exit={{ opacity: 0, scale: 0.96 }} transition={spring}>
           <div className="imgview-wrap">
-            {img ? <img src={img} alt="" /> : <div className="imgview-placeholder" />}
+            {img ? <img src={img} alt="" decoding="async" /> : <div className="imgview-placeholder" />}
           </div>
           {detailsStrip(
             <span className="imgview-finder" style={{ flexShrink: 0 }} onClick={() => invoke("cmd_reveal_in_finder", { path: imgPath })}>Show in Finder</span>,
@@ -1188,7 +1205,7 @@ function DetailModal({ item, onClose, onDelete, onSaved }) {
             );
           })() : (
             <>
-              {img && <img className="content-img" src={img} alt="" />}
+              {img && <img className="content-img" src={img} alt="" decoding="async" />}
               {item.title && <div className="content-title">{item.title}</div>}
               {item.html
                 ? <div className="content-body" dangerouslySetInnerHTML={{ __html: sanitizeHtml(item.html) }} />
@@ -1369,8 +1386,7 @@ function CapturePill() {
   const [shot, setShot] = useState(null);
   const [noteOpen, setNoteOpen] = useState(false);
   const [alarmOpen, setAlarmOpen] = useState(false);
-  const [remindAmt, setRemindAmt] = useState("5");        // "remind in N …"
-  const [remindUnit, setRemindUnit] = useState("minutes");
+  const [remindAt, setRemindAt] = useState(null);         // absolute target Date | null
   const noteRef = useRef(null);
   const wrapRef = useRef(null);
   const barRef = useRef(null);
@@ -1382,30 +1398,24 @@ function CapturePill() {
     shownRef.current = false; setShown(false);
     setData({ url: null, title: null, text: null, files: [] });
     setNote(""); setShot(null); setNoteOpen(false); setSaving(false);
-    setAlarmOpen(false); setRemindAmt("5"); setRemindUnit("minutes");
+    setAlarmOpen(false); setRemindAt(null);
   };
 
-  // Minutes-from-now the reminder is set to (0 = none). Single source of truth;
-  // remind_at is computed from this at save time, so there's no flaky picker
-  // state to get lost between opening the field and hitting Save.
-  const reminderMins = () => {
-    const n = parseInt(remindAmt, 10);
-    if (!n || n <= 0) return 0;
-    return n * (remindUnit === "hours" ? 60 : remindUnit === "days" ? 1440 : 1);
+  // Edit just the day (keeping the time) or just the time (keeping the day). Both
+  // keep remindAt a real Date, so nothing is lost between setting it and Save.
+  const setDatePart = (v) => {
+    if (!v) return;
+    const [y, m, dd] = v.split("-").map(Number);
+    const next = new Date(remindAt || Date.now());
+    next.setFullYear(y, m - 1, dd); next.setSeconds(0, 0);
+    setRemindAt(next);
   };
-  // Human "when" for the reminder — absolute time, prefixed with the day when it
-  // lands beyond today ("tomorrow 9:00 AM", "Fri 3:30 PM") so a multi-hour/day
-  // reminder is never ambiguous.
-  const reminderWhen = () => {
-    const m = reminderMins();
-    if (!m) return "";
-    const d = new Date(Date.now() + m * 60000);
-    const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    const now = new Date();
-    const tmrw = new Date(now); tmrw.setDate(now.getDate() + 1);
-    if (d.toDateString() === now.toDateString()) return time;
-    if (d.toDateString() === tmrw.toDateString()) return `tomorrow ${time}`;
-    return `${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
+  const setTimePart = (v) => {
+    if (!v) return;
+    const [h, mn] = v.split(":").map(Number);
+    const next = new Date(remindAt || Date.now());
+    next.setHours(h, mn, 0, 0);
+    setRemindAt(next);
   };
 
   const requestClose = useCallback((restoreFocus = true) => {
@@ -1423,7 +1433,7 @@ function CapturePill() {
       // paint — decouples "pill appears" from "content fills in".
       shownRef.current = true; setShown(true);
       setNote(""); setSaving(false); setNoteOpen(false);
-      setAlarmOpen(false); setRemindAmt("5"); setRemindUnit("minutes");
+      setAlarmOpen(false); setRemindAt(null);
       setShot(null); setData({ url: null, title: null, text: null, files: [] });
       requestAnimationFrame(() => {
         setData({ files: [], ...e.payload });
@@ -1476,10 +1486,10 @@ function CapturePill() {
           try { const md = htmlToMarkdown(data.html); if (md.trim()) mdText = md; }
           catch (err) { console.error("html→md failed", err); }
         }
-        const mins = alarmOpen ? reminderMins() : 0;
+        const rAt = alarmOpen && remindAt ? remindAt : null;
         await invoke("cmd_save_item", {
           req: { type, url: data.url ?? null, title: data.title ?? null, text: mdText, html: null, file_path: null, notes: note || null,
-                 remind_at: mins > 0 ? new Date(Date.now() + mins * 60000).toISOString() : null },
+                 remind_at: rAt ? rAt.toISOString() : null },
           screenshotPath: shot?.path ?? null,
         });
       }
@@ -1570,26 +1580,15 @@ function CapturePill() {
                   <div className="ct-alarm-row">
                     <IconAlarm />
                     <span className="ct-alarm-label">Remind me</span>
-                    {reminderWhen() && <span className="ct-alarm-when">{reminderWhen()}</span>}
                   </div>
-                  <div className="ct-alarm-picks">
-                    {REMIND_PRESETS.map((p) => (
-                      <button key={p.label} type="button"
-                        className={`chip ${remindAmt === p.amt && remindUnit === p.unit ? "active" : ""}`}
-                        onClick={() => { setRemindAmt(p.amt); setRemindUnit(p.unit); }}>
-                        {p.label}
-                      </button>
-                    ))}
-                    <span className="ct-alarm-custom">
-                      <input type="number" min="1" inputMode="numeric" className="ct-alarm-amt"
-                        value={remindAmt} onChange={(e) => setRemindAmt(e.target.value.replace(/[^0-9]/g, ""))} />
-                      <select className="ct-alarm-unit" value={remindUnit}
-                        onChange={(e) => setRemindUnit(e.target.value)}>
-                        <option value="minutes">min</option>
-                        <option value="hours">hr</option>
-                        <option value="days">days</option>
-                      </select>
-                    </span>
+                  <div className="ct-alarm-exact">
+                    <input type="date" className="ct-dt" min={dateInputValue(new Date())}
+                      value={remindAt ? dateInputValue(remindAt) : ""}
+                      onChange={(e) => setDatePart(e.target.value)} />
+                    <span className="ct-exact-label">at</span>
+                    <input type="time" className="ct-dt"
+                      value={remindAt ? timeInputValue(remindAt) : ""}
+                      onChange={(e) => setTimePart(e.target.value)} />
                   </div>
                 </div>
               </div>
@@ -1607,7 +1606,8 @@ function CapturePill() {
           onClick={() => { const next = !noteOpen; setNoteOpen(next); if (next) setTimeout(() => noteRef.current?.focus(), 0); }} title="Note"><IconNote /></button>
         {hasContent && (
           <button className={`icon-btn ${alarmOpen ? "active" : ""}`}
-            onClick={() => setAlarmOpen((v) => !v)} title="Reminder"><IconAlarm /></button>
+            onClick={() => { const n = !alarmOpen; setAlarmOpen(n); if (n && !remindAt) setRemindAt(new Date(Date.now() + 30 * 60000)); }}
+            title="Reminder"><IconAlarm /></button>
         )}
         <AnimatePresence initial={false}>
           {hasContent && (

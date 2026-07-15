@@ -716,7 +716,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .pill-wrap .bar { pointer-events: auto; }
 .stack { width: 100%; max-width: 420px; }
 .bar { width: max-content; max-width: 420px; }
-.stack { display: flex; flex-direction: column; gap: 8px; align-items: stretch; max-height: 256px; overflow-y: auto; }
+.stack { display: flex; flex-direction: column; gap: 8px; align-items: stretch; max-height: 256px; overflow-y: auto; scrollbar-width: none; }
+.stack::-webkit-scrollbar { display: none; }
 .chip-card {
   background: var(--card); border: 1px solid var(--border2); border-radius: var(--r-md);
   box-shadow: var(--shadow-1); padding: 12px 14px; font-size: 14px; color: var(--text);
@@ -778,25 +779,24 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .bar .save-btn { padding: 7px 14px; margin-left: 2px; }
 
 /* Reminder picker inside the content card */
-.ct-alarm { display: flex; flex-direction: column; gap: 9px; }
+.ct-alarm { display: flex; flex-direction: column; gap: 10px; }
 .ct-alarm-row { display: flex; align-items: center; gap: 8px; }
 .ct-alarm-row svg { width: 16px; height: 16px; color: var(--accent); flex: 0 0 auto; }
 .ct-alarm-label { font-size: 13px; color: var(--text2); }
-.ct-alarm-when { font-size: 12.5px; font-weight: 600; color: var(--accent); white-space: nowrap; margin-left: auto; }
-.ct-alarm-picks { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.ct-alarm-picks .chip { cursor: pointer; padding: 5px 11px; font-size: 12px; }
-.ct-alarm-custom { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; }
-.ct-alarm-amt {
-  width: 44px; text-align: center; background: var(--bg3);
-  border: 1px solid var(--border2); border-radius: var(--r-sm);
-  padding: 4px 6px; font-size: 13px; color: var(--text); font-family: var(--font);
-  outline: none; -webkit-appearance: none; appearance: none; -moz-appearance: textfield;
+/* <date> at <time> — the exact day + time we'll remind at */
+.ct-alarm-exact { display: flex; align-items: center; gap: 8px; }
+.ct-exact-label { font-size: 12px; color: var(--text3); flex: 0 0 auto; }
+.ct-dt {
+  flex: 1 1 auto; min-width: 96px;
+  background: var(--bg2); border: 1px solid var(--border2); border-radius: var(--r-sm);
+  padding: 5px 9px; font-size: 12.5px; color: var(--text); font-family: var(--font);
+  outline: none; cursor: pointer;
+  transition: border-color .15s var(--ease), background .15s var(--ease);
 }
-.ct-alarm-unit {
-  -webkit-appearance: auto; appearance: auto; background: var(--bg3);
-  border: 1px solid var(--border2); border-radius: var(--r-sm);
-  padding: 4px 6px; font-size: 13px; color: var(--text); font-family: var(--font); outline: none;
-}
+.ct-dt:hover { background: var(--bg3); }
+.ct-dt:focus { border-color: var(--accent); background: var(--card); }
+.ct-dt::-webkit-calendar-picker-indicator { opacity: .45; cursor: pointer; }
+.ct-dt::-webkit-calendar-picker-indicator:hover { opacity: .85; }
 
 /* Floating reminder card (alarm window) — drops under the tray icon */
 .alarm-wrap {

@@ -360,29 +360,20 @@ pub fn cmd_take_screenshot() -> Option<Screenshot> {
     take_screenshot_to_temp()
 }
 
-/// Read a stored image (relative to the storage folder, or absolute) as a
-/// data-URL, for display in the detail panel.
+/// Resolve a stored image path (relative to the storage folder, or absolute) to
+/// an absolute filesystem path. The webview then loads it via the asset protocol
+/// (`convertFileSrc`) — streamed natively by WebKit instead of being shipped as a
+/// multi-MB base64 string over IPC and parsed on the main thread. This is what
+/// keeps opening large images/files smooth.
 #[tauri::command]
-pub fn cmd_read_image(storage: tauri::State<StorageDir>, path: String) -> Result<String, String> {
+pub fn cmd_image_src(storage: tauri::State<StorageDir>, path: String) -> Result<String, String> {
     let p = Path::new(&path);
     let full = if p.is_absolute() {
         p.to_path_buf()
     } else {
         storage.lock().map_err(|e| e.to_string())?.join(p)
     };
-    let bytes = std::fs::read(&full).map_err(|e| e.to_string())?;
-    let mime = match full
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())
-        .as_deref()
-    {
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        _ => "image/png",
-    };
-    Ok(format!("data:{mime};base64,{}", b64(&bytes)))
+    Ok(full.to_string_lossy().to_string())
 }
 
 /// Check whether macOS has granted screen-recording access.
@@ -641,7 +632,8 @@ pub(crate) fn popup_recently_shown() -> bool {
     now_ms().saturating_sub(LAST_SHOWN_MS.load(Ordering::Relaxed)) < 350
 }
 
-#[tauri::command]
+// Not a `#[tauri::command]` — only ever called from Rust (trigger_capture /
+// trigger_screenshot), never invoked from the frontend.
 pub fn cmd_show_popup(app: AppHandle, data: PopupData) -> Result<(), String> {
     // Window is pre-created at startup and kept alive — just update content and show.
     let win = app
@@ -819,7 +811,7 @@ pub fn take_due_reminder(db: &Db) -> Option<Item> {
         for (id, at) in rows.flatten() {
             if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&at) {
                 let ts = ts.with_timezone(&chrono::Utc);
-                if ts <= now && best.as_ref().map_or(true, |(_, b)| ts < *b) {
+                if ts <= now && best.as_ref().is_none_or(|(_, b)| ts < *b) {
                     best = Some((id, ts));
                 }
             }
@@ -872,14 +864,15 @@ pub fn show_alarm(app: &AppHandle, item: Item) {
     };
     let _ = win.emit("alarm-data", &item);
 
-    // Fixed top-left, just below the menu bar.
+    // Fixed top-right, just below the menu bar. (Alarm window is 340 logical wide.)
     let scale = win.scale_factor().unwrap_or(2.0);
-    let (mon_x, mon_y) = match win.primary_monitor() {
-        Ok(Some(mon)) => (mon.position().x as f64, mon.position().y as f64),
-        _ => (0.0, 0.0),
+    let panel_w = 340.0 * scale;
+    let (mon_x, mon_w, mon_y) = match win.primary_monitor() {
+        Ok(Some(mon)) => (mon.position().x as f64, mon.size().width as f64, mon.position().y as f64),
+        _ => (0.0, 1440.0 * scale, 0.0),
     };
     let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-        x: (mon_x + 16.0 * scale) as i32,
+        x: (mon_x + mon_w - panel_w - 16.0 * scale) as i32,
         y: (mon_y + 32.0 * scale) as i32,
     }));
 
