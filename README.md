@@ -45,7 +45,7 @@ That's it. No surprise "Automation" prompts, no background access.
 ```bash
 npm install
 npm run tauri dev      # run in development
-npm run tauri build    # build Shiro.app
+./scripts/build-dmg.sh    # build Shiro.app
 ```
 
 The built app lands in `src-tauri/target/release/bundle/macos/Shiro.app`.
