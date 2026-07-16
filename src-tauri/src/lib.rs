@@ -178,8 +178,9 @@ pub fn run() {
             ) {
                 if let Ok(menu) = Menu::with_items(app, &[&open_i, &capture_i, &quit_i]) {
                     {
-                        // Menu-bar icon: just the Shiro mascot (transparent, no square).
-                        // Not a template image, so its colours show as-is.
+                        // Menu-bar icon: the colour mascot, tightly cropped to 44px so
+                        // macOS renders it at bar height. NOT a template (keeps the
+                        // colour); the earlier 88px padded image showed up invisible.
                         let tray_icon = tauri::include_image!("icons/tray.png");
                         let _ = TrayIconBuilder::with_id("shiro-tray")
                             .icon(tray_icon)
